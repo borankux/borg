@@ -213,7 +213,12 @@ func (s *CaptureService) StopStreaming() {
 	}
 	
 	s.running = false
-	close(s.stopChan)
+	
+	// Close channel only if it's not nil (prevent double-close panic)
+	if s.stopChan != nil {
+		close(s.stopChan)
+		s.stopChan = nil
+	}
 }
 
 func (s *CaptureService) IsRunning() bool {

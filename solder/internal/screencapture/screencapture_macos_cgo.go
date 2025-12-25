@@ -64,7 +64,7 @@ func newMacOSCaptureSession(quality, maxWidth, maxHeight int) *macosCaptureSessi
 
 	s := &macosCaptureSession{
 		session:   session,
-		frameChan: make(chan []byte, 3), // Buffer 3 frames
+		frameChan: make(chan []byte, 10), // Buffer 10 frames for smoother streaming
 		stopChan:  make(chan struct{}),
 		quality:   quality,
 		maxWidth:  maxWidth,
@@ -147,7 +147,12 @@ func (s *macosCaptureSession) stopCapture() {
 
 	C.StopCapture(s.session)
 	s.running = false
-	close(s.stopChan)
+	
+	// Close channel only if it's not nil (prevent double-close panic)
+	if s.stopChan != nil {
+		close(s.stopChan)
+		s.stopChan = nil
+	}
 }
 
 func (s *macosCaptureSession) isCapturing() bool {

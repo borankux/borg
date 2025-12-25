@@ -183,9 +183,18 @@ The agent will continue running without screen monitoring.
 					if shouldStream && !isStreaming {
 						// Start streaming
 						log.Printf("Starting screen streaming (viewers: %d)", viewerCount)
+						
+						// Try to connect WebSocket for faster streaming
+						if err := httpClient.ConnectScreenWebSocket(ctx); err != nil {
+							log.Printf("Failed to connect WebSocket, falling back to HTTP: %v", err)
+						} else {
+							log.Println("WebSocket connected for screen streaming")
+						}
+						
 						streamingCtx, streamingCancel = context.WithCancel(ctx)
 						go screenCapture.StartStreaming(streamingCtx, func(data []byte) error {
-							return httpClient.SendScreenFrame(ctx, data)
+							// Use WebSocket if available, fallback to HTTP
+							return httpClient.SendScreenFrameBinary(ctx, data)
 						})
 					} else if !shouldStream && isStreaming {
 						// Stop streaming
@@ -193,6 +202,7 @@ The agent will continue running without screen monitoring.
 						streamingCancel()
 						streamingCancel = nil
 						screenCapture.StopStreaming()
+						httpClient.CloseScreenWebSocket()
 					}
 					streamingMu.Unlock()
 				}

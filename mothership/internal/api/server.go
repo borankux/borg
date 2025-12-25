@@ -43,8 +43,11 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 	// WebSocket endpoint
 	router.GET("/ws", websocket.HandleWebSocket(hub))
 	
-	// Screen streaming WebSocket endpoint
+	// Screen streaming WebSocket endpoint (for viewers)
 	router.GET("/ws/screen/:runnerID", websocket.HandleScreenWebSocket(screenHub))
+	
+	// Screen streaming WebSocket endpoint (for agents to send frames)
+	router.GET("/ws/screen/agent/:runnerID", websocket.HandleAgentScreenWebSocket(screenHub))
 	
 	// Download endpoint (before API routes)
 	router.GET("/api/v1/download/solder.exe", handler.DownloadSolder)

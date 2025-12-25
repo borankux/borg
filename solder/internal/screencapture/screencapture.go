@@ -196,7 +196,11 @@ func (s *CaptureService) StopStreaming() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running {
-		close(s.stopChan)
+		// Close channel only if it's not nil (prevent double-close panic)
+		if s.stopChan != nil {
+			close(s.stopChan)
+			s.stopChan = nil
+		}
 		s.running = false
 	}
 }

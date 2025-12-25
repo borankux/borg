@@ -11,6 +11,11 @@
 // Frame callback function pointer type
 typedef void (*FrameCallback)(void* buffer, size_t size, uint32_t width, uint32_t height, int64_t timestamp);
 
+// Static cache for SCDisplay objects to avoid blocking semaphores in CGO
+static NSMutableDictionary<NSNumber*, SCDisplay*>* g_displayCache = nil;
+static dispatch_once_t g_cacheOnceToken = 0;
+static dispatch_queue_t g_cacheQueue = nil;
+
 // Capture session wrapper
 @interface ScreenCaptureSession : NSObject <SCStreamOutput, SCStreamDelegate>
 
@@ -28,38 +33,73 @@ typedef void (*FrameCallback)(void* buffer, size_t size, uint32_t width, uint32_
 
 @implementation ScreenCaptureSession
 
++ (void)initializeDisplayCache {
+    dispatch_once(&g_cacheOnceToken, ^{
+        g_displayCache = [[NSMutableDictionary alloc] init];
+        g_cacheQueue = dispatch_queue_create("com.borg.screencapture.cache", DISPATCH_QUEUE_SERIAL);
+        
+        // Pre-fetch displays synchronously with timeout (only once during initialization)
+        // This happens before CGO calls, so blocking is acceptable here
+        if (@available(macOS 12.3, *)) {
+            __block BOOL fetchComplete = NO;
+            dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+            
+            [SCShareableContent getShareableContentExcludingDesktopWindows:YES
+                                                        onScreenWindowsOnly:YES
+                                                         completionHandler:^(SCShareableContent* content, NSError* error) {
+                if (content && !error) {
+                    dispatch_async(g_cacheQueue, ^{
+                        for (SCDisplay* display in content.displays) {
+                            NSNumber* key = @(display.displayID);
+                            g_displayCache[key] = display;
+                        }
+                        NSLog(@"Cached %lu displays", (unsigned long)g_displayCache.count);
+                        fetchComplete = YES;
+                        dispatch_semaphore_signal(semaphore);
+                    });
+                } else {
+                    if (error) {
+                        NSLog(@"Failed to prefetch displays: %@", error);
+                    }
+                    fetchComplete = YES;
+                    dispatch_semaphore_signal(semaphore);
+                }
+            }];
+            
+            // Wait with timeout (1 second max) for initial cache population
+            // This only happens once during initialization, before CGO calls
+            dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC);
+            dispatch_semaphore_wait(semaphore, timeout);
+        }
+    });
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
         _isCapturing = NO;
         _captureQueue = dispatch_queue_create("com.borg.screencapture", DISPATCH_QUEUE_SERIAL);
+        // Ensure cache is initialized
+        [[self class] initializeDisplayCache];
     }
     return self;
 }
 
-// Helper function to get SCDisplay from CGDirectDisplayID
+// Helper function to get SCDisplay from CGDirectDisplayID (non-blocking, uses cache)
 + (SCDisplay*)displayForDisplayID:(CGDirectDisplayID)displayID {
+    // Ensure cache is initialized (this happens once, before CGO calls)
+    [self initializeDisplayCache];
+    
     if (@available(macOS 12.3, *)) {
         __block SCDisplay* result = nil;
-        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
         
-        [SCShareableContent getShareableContentExcludingDesktopWindows:YES
-                                                    onScreenWindowsOnly:YES
-                                                     completionHandler:^(SCShareableContent* content, NSError* error) {
-            if (content && !error) {
-                for (SCDisplay* display in content.displays) {
-                    if (display.displayID == displayID) {
-                        result = display;
-                        break;
-                    }
-                }
-            } else if (error) {
-                NSLog(@"Failed to get shareable content: %@", error);
-            }
-            dispatch_semaphore_signal(semaphore);
-        }];
+        // Check cache only (synchronous, non-blocking cache lookup)
+        // Cache should be populated during initialization
+        dispatch_sync(g_cacheQueue, ^{
+            NSNumber* key = @(displayID);
+            result = g_displayCache[key];
+        });
         
-        dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
         return result;
     }
     return nil;

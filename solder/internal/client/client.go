@@ -9,14 +9,23 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
-// Client handles HTTP communication with the mothership
+// Client handles HTTP and WebSocket communication with the mothership
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	runnerID   string
+	
+	// WebSocket connection for screen streaming
+	screenWSConn *websocket.Conn
+	screenWSMu   sync.Mutex
+	screenWSDialer *websocket.Dialer
 }
 
 // NewClient creates a new HTTP client connection to mothership
@@ -27,6 +36,9 @@ func NewClient(baseURL, runnerID string) *Client {
 			Timeout: 30 * time.Second,
 		},
 		runnerID: runnerID,
+		screenWSDialer: &websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second,
+		},
 	}
 }
 
@@ -35,9 +47,9 @@ func (c *Client) SetRunnerID(runnerID string) {
 	c.runnerID = runnerID
 }
 
-// Close closes the client (no-op for HTTP client, kept for compatibility)
+// Close closes the client (closes WebSocket connection if open)
 func (c *Client) Close() error {
-	return nil
+	return c.CloseScreenWebSocket()
 }
 
 // RegisterRunnerRequest represents runner registration request
@@ -496,4 +508,85 @@ func (c *Client) GetScreenStreamStatus(ctx context.Context) (bool, int, error) {
 	}
 
 	return statusResp.Streaming, statusResp.ViewerCount, nil
+}
+
+// ConnectScreenWebSocket connects to the screen streaming WebSocket endpoint
+func (c *Client) ConnectScreenWebSocket(ctx context.Context) error {
+	c.screenWSMu.Lock()
+	defer c.screenWSMu.Unlock()
+	
+	if c.screenWSConn != nil {
+		// Already connected
+		return nil
+	}
+	
+	if c.runnerID == "" {
+		return fmt.Errorf("runner ID not set, cannot connect WebSocket")
+	}
+	
+	// Convert HTTP URL to WebSocket URL
+	wsURL, err := url.Parse(c.baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid base URL: %w", err)
+	}
+	
+	if wsURL.Scheme == "https" {
+		wsURL.Scheme = "wss"
+	} else {
+		wsURL.Scheme = "ws"
+	}
+	wsURL.Path = fmt.Sprintf("/ws/screen/agent/%s", c.runnerID)
+	
+	conn, _, err := c.screenWSDialer.DialContext(ctx, wsURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to connect WebSocket: %w", err)
+	}
+	
+	c.screenWSConn = conn
+	return nil
+}
+
+// SendScreenFrameBinary sends a screen frame via WebSocket as binary data
+func (c *Client) SendScreenFrameBinary(ctx context.Context, frameData []byte) error {
+	c.screenWSMu.Lock()
+	conn := c.screenWSConn
+	c.screenWSMu.Unlock()
+	
+	if conn == nil {
+		// Fallback to HTTP if WebSocket not connected
+		return c.SendScreenFrame(ctx, frameData)
+	}
+	
+	// Set write deadline
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	
+	// Send binary frame
+	err := conn.WriteMessage(websocket.BinaryMessage, frameData)
+	if err != nil {
+		// Connection lost, close and fallback to HTTP
+		c.screenWSMu.Lock()
+		if c.screenWSConn == conn {
+			c.screenWSConn.Close()
+			c.screenWSConn = nil
+		}
+		c.screenWSMu.Unlock()
+		
+		// Fallback to HTTP
+		return c.SendScreenFrame(ctx, frameData)
+	}
+	
+	return nil
+}
+
+// CloseScreenWebSocket closes the screen streaming WebSocket connection
+func (c *Client) CloseScreenWebSocket() error {
+	c.screenWSMu.Lock()
+	defer c.screenWSMu.Unlock()
+	
+	if c.screenWSConn != nil {
+		err := c.screenWSConn.Close()
+		c.screenWSConn = nil
+		return err
+	}
+	return nil
 }

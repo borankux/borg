@@ -3,6 +3,7 @@ module borg/solder
 go 1.21
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/kbinani/screenshot v0.0.0-20230812210009-b87d31814237
 	github.com/spf13/viper v1.18.2
 	golang.org/x/image v0.15.0
