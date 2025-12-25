@@ -31,8 +31,7 @@ func ServeStaticFiles(router *gin.Engine) {
 	}
 	
 	if distPath != "" {
-		// Serve static files
-		router.StaticFile("/", filepath.Join(distPath, "index.html"))
+		// Serve static assets
 		router.Static("/assets", filepath.Join(distPath, "assets"))
 		
 		// Serve other static files (favicon, etc.)
@@ -40,13 +39,14 @@ func ServeStaticFiles(router *gin.Engine) {
 		
 		// Catch-all for SPA routing - serve index.html for all non-API routes
 		router.NoRoute(func(c *gin.Context) {
-			// Don't serve index.html for API routes
-			if !strings.HasPrefix(c.Request.URL.Path, "/api") && 
-			   !strings.HasPrefix(c.Request.URL.Path, "/ws") {
-				c.File(filepath.Join(distPath, "index.html"))
-			} else {
+			// Don't serve index.html for API routes or WebSocket routes
+			if strings.HasPrefix(c.Request.URL.Path, "/api") || 
+			   strings.HasPrefix(c.Request.URL.Path, "/ws") {
 				c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
+				return
 			}
+			// Serve index.html for all other routes (SPA routing)
+			c.File(filepath.Join(distPath, "index.html"))
 		})
 	} else {
 		// Development mode - serve a helpful message
