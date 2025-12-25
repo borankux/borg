@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
+	"borg/mothership/internal/auth"
 	"borg/mothership/internal/models"
 	"borg/mothership/internal/queue"
 	"borg/mothership/internal/storage"
@@ -138,40 +140,60 @@ func (h *Handler) CreateJob(c *gin.Context) {
 		WorkingDirectory: req.WorkingDirectory,
 		TimeoutSeconds:   req.TimeoutSeconds,
 		MaxRetries:       req.MaxRetries,
+		Metadata:         "{}", // Initialize Metadata as empty JSON object
 	}
 
-	// Convert Args and Env to JSON strings
-	if len(req.Args) > 0 {
-		// Validate it's valid JSON
+	// Convert Args and Env to JSON strings - ensure valid JSON for PostgreSQL JSONB
+	// Handle null, empty, or invalid JSON gracefully
+	argsStr := strings.TrimSpace(string(req.Args))
+	if len(argsStr) > 0 && argsStr != "null" {
+		// Validate it's valid JSON array
 		var argsArray []interface{}
 		if err := json.Unmarshal(req.Args, &argsArray); err == nil {
 			// Re-marshal to ensure proper formatting
 			if argsJSON, err := json.Marshal(argsArray); err == nil {
 				job.Args = string(argsJSON)
 			} else {
-				job.Args = string(req.Args)
+				// Fallback to empty array if marshaling fails
+				job.Args = "[]"
 			}
 		} else {
-			job.Args = string(req.Args)
+			// Invalid JSON - try to parse as any JSON value and wrap in array
+			var singleArg interface{}
+			if err := json.Unmarshal(req.Args, &singleArg); err == nil {
+				if argsJSON, err := json.Marshal([]interface{}{singleArg}); err == nil {
+					job.Args = string(argsJSON)
+				} else {
+					job.Args = "[]"
+				}
+			} else {
+				// Completely invalid - use empty array
+				job.Args = "[]"
+			}
 		}
 	} else {
+		// Empty or null - use empty array
 		job.Args = "[]"
 	}
 
-	if len(req.Env) > 0 {
-		// Validate it's valid JSON
+	envStr := strings.TrimSpace(string(req.Env))
+	if len(envStr) > 0 && envStr != "null" {
+		// Validate it's valid JSON object
 		var envMap map[string]interface{}
 		if err := json.Unmarshal(req.Env, &envMap); err == nil {
 			// Re-marshal to ensure proper formatting
 			if envJSON, err := json.Marshal(envMap); err == nil {
 				job.Env = string(envJSON)
 			} else {
-				job.Env = string(req.Env)
+				// Fallback to empty object if marshaling fails
+				job.Env = "{}"
 			}
 		} else {
-			job.Env = string(req.Env)
+			// Invalid JSON - use empty object
+			job.Env = "{}"
 		}
 	} else {
+		// Empty or null - use empty object
 		job.Env = "{}"
 	}
 
@@ -977,4 +999,98 @@ func (h *Handler) DownloadSolder(c *gin.Context) {
 
 	// Serve the binary file
 	c.File(filePath)
+}
+
+// LoginRequest represents login request
+type LoginRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+// LoginResponse represents login response
+type LoginResponse struct {
+	Token    string      `json:"token"`
+	User     *models.User `json:"user"`
+	Success  bool        `json:"success"`
+	Message  string      `json:"message"`
+}
+
+// Login handles user authentication
+func (h *Handler) Login(c *gin.Context) {
+	var req LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Find user by username
+	var user models.User
+	if err := h.db.Where("username = ?", req.Username).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusUnauthorized, LoginResponse{
+				Success: false,
+				Message: "invalid username or password",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Verify password
+	if !auth.VerifyPassword(req.Password, user.PasswordHash) {
+		c.JSON(http.StatusUnauthorized, LoginResponse{
+			Success: false,
+			Message: "invalid username or password",
+		})
+		return
+	}
+
+	// Generate JWT token
+	token, err := auth.GenerateJWT(user.ID, user.Username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Return response (don't include password hash)
+	userResponse := &models.User{
+		ID:        user.ID,
+		Username:  user.Username,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
+
+	c.JSON(http.StatusOK, LoginResponse{
+		Token:   token,
+		User:   userResponse,
+		Success: true,
+		Message: "login successful",
+	})
+}
+
+// GetCurrentUser returns the current authenticated user
+func (h *Handler) GetCurrentUser(c *gin.Context) {
+	// Get user from context (set by auth middleware)
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var user models.User
+	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	// Return user without password hash
+	userResponse := &models.User{
+		ID:        user.ID,
+		Username:  user.Username,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
+
+	c.JSON(http.StatusOK, userResponse)
 }

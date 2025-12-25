@@ -1,6 +1,9 @@
 package models
 
 import (
+	"borg/mothership/internal/auth"
+	"time"
+
 	"gorm.io/gorm"
 	"github.com/google/uuid"
 )
@@ -24,8 +27,9 @@ func Migrate(db *gorm.DB) error {
 		}
 	}
 	
-	// Now run full migration
-	return db.AutoMigrate(
+	// Run full migration including User model
+	if err := db.AutoMigrate(
+		&User{},
 		&Runner{},
 		&Job{},
 		&JobFile{},
@@ -33,6 +37,33 @@ func Migrate(db *gorm.DB) error {
 		&TaskLog{},
 		&File{},
 		&Artifact{},
-	)
+	); err != nil {
+		return err
+	}
+	
+	// Create default user if no users exist
+	var userCount int64
+	db.Model(&User{}).Count(&userCount)
+	
+	if userCount == 0 {
+		passwordHash, err := auth.HashPassword("mirzat")
+		if err != nil {
+			return err
+		}
+		
+		defaultUser := &User{
+			ID:           uuid.New().String(),
+			Username:     "mirzat",
+			PasswordHash: passwordHash,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+		}
+		
+		if err := db.Create(defaultUser).Error; err != nil {
+			return err
+		}
+	}
+	
+	return nil
 }
 

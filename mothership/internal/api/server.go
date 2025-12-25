@@ -52,27 +52,41 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 	// API routes
 	api := router.Group("/api/v1")
 	{
-		// Dashboard
-		api.GET("/stats", handler.GetDashboardStats)
+		// Auth routes (public)
+		auth := api.Group("/auth")
+		{
+			auth.POST("/login", handler.Login)
+		}
 		
-		// Jobs
-		api.GET("/jobs", handler.ListJobs)
-		api.POST("/jobs", handler.CreateJob)
-		api.GET("/jobs/:id", handler.GetJob)
-		api.POST("/jobs/:id/pause", handler.PauseJob)
-		api.POST("/jobs/:id/resume", handler.ResumeJob)
-		api.POST("/jobs/:id/cancel", handler.CancelJob)
+		// Protected dashboard endpoints (require authentication)
+		protected := api.Group("")
+		protected.Use(AuthMiddleware())
+		{
+			// Dashboard
+			protected.GET("/stats", handler.GetDashboardStats)
+			
+			// Jobs
+			protected.GET("/jobs", handler.ListJobs)
+			protected.POST("/jobs", handler.CreateJob)
+			protected.GET("/jobs/:id", handler.GetJob)
+			protected.POST("/jobs/:id/pause", handler.PauseJob)
+			protected.POST("/jobs/:id/resume", handler.ResumeJob)
+			protected.POST("/jobs/:id/cancel", handler.CancelJob)
+			
+			// Runners (dashboard endpoints - protected)
+			protected.GET("/runners", handler.ListRunners)
+			protected.GET("/runners/:id", handler.GetRunner)
+			protected.PATCH("/runners/:id/rename", handler.RenameRunner)
+			protected.DELETE("/runners/:id", handler.DeleteRunner)
+			
+			// Logs
+			protected.GET("/tasks/:id/logs", handler.GetTaskLogs)
+			
+			// Current user endpoint
+			protected.GET("/auth/me", handler.GetCurrentUser)
+		}
 		
-		// Runners
-		api.GET("/runners", handler.ListRunners)
-		api.GET("/runners/:id", handler.GetRunner)
-		api.PATCH("/runners/:id/rename", handler.RenameRunner)
-		api.DELETE("/runners/:id", handler.DeleteRunner)
-		
-		// Logs
-		api.GET("/tasks/:id/logs", handler.GetTaskLogs)
-		
-		// Runner API endpoints
+		// Runner API endpoints (unprotected - for agents)
 		api.POST("/runners/register", handler.RegisterRunner)
 		api.POST("/runners/:id/heartbeat", handler.Heartbeat)
 		api.GET("/runners/:id/tasks/next", handler.GetNextTask)
@@ -80,11 +94,11 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 		api.GET("/files/:id/download", handler.DownloadFile)
 		api.POST("/artifacts/upload", handler.UploadArtifact)
 		
-		// Screen streaming endpoints
+		// Screen streaming endpoints (unprotected - for agents)
 		api.POST("/runners/:id/screen/frame", handler.UploadScreenFrame)
 		api.GET("/runners/:id/screen/status", handler.GetScreenStreamStatus)
 		
-		// Screenshot endpoints (deprecated - kept for backward compatibility)
+		// Screenshot endpoints (deprecated - kept for backward compatibility, unprotected)
 		api.POST("/runners/:id/screenshots", handler.UploadScreenshot)
 		api.GET("/runners/:id/screenshots", handler.GetScreenshots)
 		api.GET("/runners/:id/screenshots/:filename", handler.GetScreenshot)
