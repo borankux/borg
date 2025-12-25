@@ -49,12 +49,11 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 	// Download endpoint (before API routes)
 	router.GET("/api/v1/download/solder.exe", handler.DownloadSolder)
 	
-	// Auth login endpoint (public) - register directly on router to ensure it's accessible
-	router.POST("/api/v1/auth/login", handler.Login)
-	
 	// API routes
 	api := router.Group("/api/v1")
 	{
+		// Public auth endpoints (no authentication required)
+		api.POST("/auth/login", handler.Login)
 		
 		// Protected dashboard endpoints (require authentication)
 		protected := api.Group("")
