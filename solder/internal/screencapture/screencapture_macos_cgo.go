@@ -23,16 +23,25 @@ import (
 	"golang.org/x/image/draw"
 )
 
+// rawFrame represents an unprocessed frame from capture
+type rawFrame struct {
+	data   []byte
+	width  int
+	height int
+}
+
 // macosCaptureSession wraps the C ScreenCaptureKit session
 type macosCaptureSession struct {
-	session   unsafe.Pointer
-	frameChan chan []byte
-	stopChan  chan struct{}
-	mu        sync.Mutex
-	running   bool
-	quality   int
-	maxWidth  int
-	maxHeight int
+	session     unsafe.Pointer
+	frameChan   chan []byte      // Processed JPEG frames
+	rawFrameChan chan rawFrame    // Raw BGRA frames for processing
+	stopChan    chan struct{}
+	mu          sync.Mutex
+	running     bool
+	quality     int
+	maxWidth    int
+	maxHeight   int
+	processingWg sync.WaitGroup  // Wait for processing goroutine
 }
 
 var (
@@ -63,46 +72,48 @@ func newMacOSCaptureSession(quality, maxWidth, maxHeight int) *macosCaptureSessi
 	}
 
 	s := &macosCaptureSession{
-		session:   session,
-		frameChan: make(chan []byte, 10), // Buffer 10 frames for smoother streaming
-		stopChan:  make(chan struct{}),
-		quality:   quality,
-		maxWidth:  maxWidth,
-		maxHeight: maxHeight,
+		session:      session,
+		frameChan:    make(chan []byte, 5),    // Processed frames (smaller buffer)
+		rawFrameChan: make(chan rawFrame, 3),  // Raw frames (small buffer, drops old frames)
+		stopChan:     make(chan struct{}),
+		quality:      quality,
+		maxWidth:     maxWidth,
+		maxHeight:    maxHeight,
 	}
 
-	// Set up global callback handler
+	// Set up global callback handler - fast path: just copy and queue
 	globalFrameMutex.Lock()
 	globalFrameChan = s.frameChan
 	globalFrameHandler = func(buffer unsafe.Pointer, size C.size_t, width C.uint32_t, height C.uint32_t, timestamp C.int64_t) {
-		// Copy C buffer to Go slice
+		// Fast: Copy C buffer to Go slice
 		data := C.GoBytes(buffer, C.int(size))
 		
-		// Convert BGRA to RGBA and create image
-		img := convertBGRAtoRGBA(data, int(width), int(height))
-		
-		// Resize if needed
-		if s.maxWidth > 0 && s.maxHeight > 0 {
-			img = resizeImage(img, s.maxWidth, s.maxHeight)
-		}
-		
-		// Encode as JPEG
-		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: s.quality}); err != nil {
-			return
-		}
-		
-		// Send to channel (non-blocking)
-		select {
-		case s.frameChan <- buf.Bytes():
-		default:
-			// Channel full, drop frame
-		}
-		
-		// Free C memory
+		// Free C memory immediately (we have Go copy)
 		C.free(buffer)
+		
+		// Queue raw frame for processing (non-blocking, drops if full)
+		select {
+		case s.rawFrameChan <- rawFrame{data: data, width: int(width), height: int(height)}:
+		default:
+			// Channel full - drop oldest frame and queue new one (frame skipping)
+			select {
+			case <-s.rawFrameChan:
+				// Dropped old frame, now try again
+				select {
+				case s.rawFrameChan <- rawFrame{data: data, width: int(width), height: int(height)}:
+				default:
+					// Still full, drop this frame too
+				}
+			default:
+				// Nothing to drop, skip this frame
+			}
+		}
 	}
 	globalFrameMutex.Unlock()
+	
+	// Start processing goroutine (non-blocking)
+	s.processingWg.Add(1)
+	go s.processFrames()
 
 	// Set C callback - use a bridge function
 	C.SetFrameCallback(session, (*[0]byte)(C.frameCallbackBridge))
@@ -115,6 +126,8 @@ func newMacOSCaptureSession(quality, maxWidth, maxHeight int) *macosCaptureSessi
 
 func (s *macosCaptureSession) cleanup() {
 	if s.session != nil {
+		// Stop capture first
+		s.stopCapture()
 		C.DestroyCaptureSession(s.session)
 		s.session = nil
 	}
@@ -137,6 +150,44 @@ func (s *macosCaptureSession) startCapture(displayID uint32) error {
 	return nil
 }
 
+// processFrames processes raw frames in a separate goroutine (non-blocking)
+func (s *macosCaptureSession) processFrames() {
+	defer s.processingWg.Done()
+	
+	for {
+		select {
+		case <-s.stopChan:
+			return
+		case rawFrame, ok := <-s.rawFrameChan:
+			if !ok {
+				// Channel closed
+				return
+			}
+			
+			// Convert BGRA to RGBA (optimized)
+			img := convertBGRAtoRGBAFast(rawFrame.data, rawFrame.width, rawFrame.height)
+			
+			// Resize if needed
+			if s.maxWidth > 0 && s.maxHeight > 0 {
+				img = resizeImage(img, s.maxWidth, s.maxHeight)
+			}
+			
+			// Encode as JPEG
+			var buf bytes.Buffer
+			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: s.quality}); err != nil {
+				continue
+			}
+			
+			// Send processed frame (non-blocking, drops if full)
+			select {
+			case s.frameChan <- buf.Bytes():
+			default:
+				// Channel full, drop frame
+			}
+		}
+	}
+}
+
 func (s *macosCaptureSession) stopCapture() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -148,11 +199,19 @@ func (s *macosCaptureSession) stopCapture() {
 	C.StopCapture(s.session)
 	s.running = false
 	
-	// Close channel only if it's not nil (prevent double-close panic)
+	// Signal processing goroutine to stop
 	if s.stopChan != nil {
 		close(s.stopChan)
 		s.stopChan = nil
 	}
+	
+	// Close raw frame channel to signal processing goroutine
+	if s.rawFrameChan != nil {
+		close(s.rawFrameChan)
+	}
+	
+	// Wait for processing goroutine to finish
+	s.processingWg.Wait()
 }
 
 func (s *macosCaptureSession) isCapturing() bool {
@@ -172,25 +231,31 @@ func (s *macosCaptureSession) getFrame(ctx context.Context) ([]byte, error) {
 	}
 }
 
-// convertBGRAtoRGBA converts BGRA pixel data to RGBA image
-func convertBGRAtoRGBA(data []byte, width, height int) image.Image {
+// convertBGRAtoRGBAFast converts BGRA pixel data to RGBA image (optimized)
+// Uses single loop instead of nested loops for better performance
+func convertBGRAtoRGBAFast(data []byte, width, height int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	pixels := width * height
 	
-	// BGRA to RGBA conversion
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			srcIdx := (y*width + x) * 4
-			dstIdx := img.PixOffset(x, y)
-			
-			// BGRA -> RGBA: swap R and B channels
-			img.Pix[dstIdx+0] = data[srcIdx+2] // R
-			img.Pix[dstIdx+1] = data[srcIdx+1] // G
-			img.Pix[dstIdx+2] = data[srcIdx+0] // B
-			img.Pix[dstIdx+3] = data[srcIdx+3] // A
-		}
+	// Optimized: single loop, direct indexing (much faster than nested loops)
+	// Process all pixels in one pass for better CPU cache usage
+	for i := 0; i < pixels; i++ {
+		srcIdx := i * 4
+		dstIdx := i * 4
+		
+		// BGRA -> RGBA: swap R and B channels
+		img.Pix[dstIdx+0] = data[srcIdx+2] // R
+		img.Pix[dstIdx+1] = data[srcIdx+1] // G
+		img.Pix[dstIdx+2] = data[srcIdx+0] // B
+		img.Pix[dstIdx+3] = data[srcIdx+3] // A
 	}
 	
 	return img
+}
+
+// convertBGRAtoRGBA is kept for backward compatibility (deprecated)
+func convertBGRAtoRGBA(data []byte, width, height int) image.Image {
+	return convertBGRAtoRGBAFast(data, width, height)
 }
 
 // resizeImage resizes an image maintaining aspect ratio
