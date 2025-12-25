@@ -108,9 +108,11 @@ export default function Runners() {
   }
   
   const parsePublicIPs = (ipsStr?: string | null): string[] => {
-    if (!ipsStr) return []
+    if (!ipsStr || ipsStr === 'null' || ipsStr === 'undefined') return []
     try {
       const parsed = JSON.parse(ipsStr)
+      // Handle case where JSON.parse returns null
+      if (parsed === null || parsed === undefined) return []
       return Array.isArray(parsed) ? parsed : []
     } catch {
       return []
@@ -118,9 +120,11 @@ export default function Runners() {
   }
 
   const parseGPUInfo = (gpuInfoStr?: string | null): GPUInfo[] => {
-    if (!gpuInfoStr) return []
+    if (!gpuInfoStr || gpuInfoStr === 'null' || gpuInfoStr === 'undefined') return []
     try {
       const parsed = JSON.parse(gpuInfoStr)
+      // Handle case where JSON.parse returns null
+      if (parsed === null || parsed === undefined) return []
       return Array.isArray(parsed) ? parsed : []
     } catch {
       return []
@@ -143,10 +147,10 @@ export default function Runners() {
   }
 
   const filterIPv4 = (ips: string[] | null | undefined): string[] => {
-    if (!ips || !Array.isArray(ips)) return []
-    return ips.filter(ip => {
+    if (!ips || !Array.isArray(ips) || ips === null) return []
+    return ips.filter((ip): ip is string => {
       // Simple IPv4 check (contains dots and no colons)
-      return ip && ip.includes('.') && !ip.includes(':')
+      return !!ip && typeof ip === 'string' && ip.includes('.') && !ip.includes(':')
     })
   }
 
@@ -174,9 +178,9 @@ export default function Runners() {
       
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {(runners || []).map((runner) => {
-          const publicIPs = parsePublicIPs(runner.public_ips)
-          const ipv4Addresses = filterIPv4(publicIPs)
-          const gpus = parseGPUInfo(runner.gpu_info)
+          const publicIPs = parsePublicIPs(runner.public_ips) || []
+          const ipv4Addresses = filterIPv4(publicIPs) || []
+          const gpus = parseGPUInfo(runner.gpu_info) || []
           const isEditing = editingRunner === runner.id
 
           return (
