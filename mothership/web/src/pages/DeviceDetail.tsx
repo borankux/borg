@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import axios from 'axios'
@@ -46,7 +46,17 @@ export default function DeviceDetail() {
     refetchInterval: 5000,
   })
 
-  const isScreenMonitoringEnabled = runner?.screen_monitoring_enabled === true
+  const isScreenMonitoringEnabled = useMemo(() => {
+    return runner?.screen_monitoring_enabled === true
+  }, [runner?.screen_monitoring_enabled])
+
+  const screenshotsQueryEnabled = useMemo(() => {
+    return !!id && isScreenMonitoringEnabled
+  }, [id, isScreenMonitoringEnabled])
+
+  const screenshotsRefetchInterval = useMemo(() => {
+    return isScreenMonitoringEnabled ? 5000 : false
+  }, [isScreenMonitoringEnabled])
 
   const { data: screenshotsData, isLoading: screenshotsLoading } = useQuery<{ screenshots: Screenshot[] }>({
     queryKey: ['screenshots', id],
@@ -54,8 +64,8 @@ export default function DeviceDetail() {
       const res = await axios.get(`/api/v1/runners/${id}/screenshots?limit=50`)
       return res.data
     },
-    enabled: !!id && isScreenMonitoringEnabled,
-    refetchInterval: isScreenMonitoringEnabled ? 5000 : false,
+    enabled: screenshotsQueryEnabled,
+    refetchInterval: screenshotsRefetchInterval,
   })
 
   const screenshots = screenshotsData?.screenshots || []
