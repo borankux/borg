@@ -919,10 +919,18 @@ type UploadScreenFrameRequest struct {
 // UploadScreenFrame handles screen frame upload from agent
 func (h *Handler) UploadScreenFrame(c *gin.Context) {
 	runnerID := c.Param("id")
+	
+	if runnerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "runner ID is required"})
+		return
+	}
 
 	var runner models.Runner
 	if err := h.db.First(&runner, "id = ?", runnerID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "runner not found",
+			"runner_id": runnerID,
+		})
 		return
 	}
 
