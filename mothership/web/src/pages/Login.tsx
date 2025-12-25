@@ -79,12 +79,6 @@ export default function Login() {
               {loading ? 'Logging in...' : 'Login'}
             </button>
           </form>
-
-          <div className="mt-6 text-center text-sm text-gray-400">
-            <p>Default credentials:</p>
-            <p className="mt-1 font-mono">Username: mirzat</p>
-            <p className="font-mono">Password: mirzat</p>
-          </div>
         </div>
       </div>
     </div>
