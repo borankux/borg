@@ -1,0 +1,76 @@
+# Solder Agent Configuration Example
+# Copy this file to config.yaml and modify as needed
+# Or set environment variables (they take priority)
+
+# Agent Configuration
+agent:
+  # Agent name (empty means use hostname)
+  name: "my-runner"
+  # Authentication token for connecting to mothership
+  token: "your-secure-token-here"
+
+# Mothership Server Configuration
+server:
+  # Mothership server address (HTTP or HTTPS)
+  address: "http://localhost:8080"
+  # Examples:
+  # address: "http://192.168.1.100:8080"
+  # address: "https://mothership.example.com"
+
+# Work Directory Configuration
+work:
+  # Directory where tasks will be executed and files stored
+  directory: "./work"
+  # Examples:
+  # directory: "/var/lib/solder/work"
+  # directory: "C:\\solder\\work"
+
+# Task Execution Configuration
+tasks:
+  # Maximum number of concurrent tasks this runner can execute
+  max_concurrent: 1
+  # Increase for runners with more resources
+  # Examples: 2, 4, 8
+
+# Heartbeat Configuration
+heartbeat:
+  # Interval between heartbeats sent to mothership (in seconds)
+  interval_seconds: 30
+  # Examples: 10, 30, 60
+
+# Screen Capture Configuration
+screen_capture:
+  # Enable screen monitoring (automatically disabled on macOS)
+  enabled: true
+  # Interval between screenshots (in seconds)
+  interval_seconds: 30
+  # JPEG quality (1-100, lower = smaller file size)
+  quality: 60
+  # Maximum width for screenshots (pixels)
+  max_width: 1280
+  # Maximum height for screenshots (pixels)
+  max_height: 720
+  # Examples:
+  # For higher quality: quality: 80, max_width: 1920, max_height: 1080
+  # For lower bandwidth: quality: 40, max_width: 800, max_height: 600
+
+# Environment Variable Overrides (optional)
+# These environment variables take priority over config file values:
+# SOLDER_AGENT_NAME - Override agent name
+# SOLDER_AGENT_TOKEN - Override authentication token
+# SOLDER_SERVER_ADDRESS - Override server address
+# SOLDER_WORK_DIRECTORY - Override work directory
+# SOLDER_TASKS_MAX_CONCURRENT - Override max concurrent tasks
+# SOLDER_HEARTBEAT_INTERVAL_SECONDS - Override heartbeat interval
+# SOLDER_SCREEN_CAPTURE_ENABLED - Override screen capture enabled
+# SOLDER_SCREEN_CAPTURE_INTERVAL_SECONDS - Override screenshot interval
+# SOLDER_SCREEN_CAPTURE_QUALITY - Override JPEG quality
+# SOLDER_SCREEN_CAPTURE_MAX_WIDTH - Override max width
+# SOLDER_SCREEN_CAPTURE_MAX_HEIGHT - Override max height
+#
+# Legacy environment variables (also supported):
+# MOTHERSHIP_ADDR - Override server address
+# RUNNER_NAME - Override agent name
+# RUNNER_TOKEN - Override authentication token
+# WORK_DIR - Override work directory
+
