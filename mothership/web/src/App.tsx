@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import Jobs from './pages/Jobs'
 import Runners from './pages/Runners'
 import Logs from './pages/Logs'
+import Download from './pages/Download'
 
 const queryClient = new QueryClient()
 
@@ -18,6 +19,7 @@ function App() {
             <Route path="/jobs" element={<Jobs />} />
             <Route path="/runners" element={<Runners />} />
             <Route path="/logs/:taskId?" element={<Logs />} />
+            <Route path="/download" element={<Download />} />
           </Routes>
         </Layout>
       </BrowserRouter>

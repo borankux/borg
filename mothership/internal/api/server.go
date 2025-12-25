@@ -42,6 +42,9 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, storage *storage
 	// WebSocket endpoint
 	router.GET("/ws", websocket.HandleWebSocket(hub))
 	
+	// Download endpoint (before API routes)
+	router.GET("/api/v1/download/solder.exe", handler.DownloadSolder)
+	
 	// API routes
 	api := router.Group("/api/v1")
 	{
@@ -60,6 +63,7 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, storage *storage
 		api.GET("/runners", handler.ListRunners)
 		api.GET("/runners/:id", handler.GetRunner)
 		api.PATCH("/runners/:id/rename", handler.RenameRunner)
+		api.DELETE("/runners/:id", handler.DeleteRunner)
 		
 		// Logs
 		api.GET("/tasks/:id/logs", handler.GetTaskLogs)

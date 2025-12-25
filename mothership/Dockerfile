@@ -1,20 +1,3 @@
-# Frontend build stage
-FROM node:20-alpine AS frontend-builder
-
-WORKDIR /build/web
-
-# Copy package files
-COPY web/package.json ./
-
-# Install dependencies
-RUN npm install
-
-# Copy frontend source
-COPY web/ .
-
-# Build frontend
-RUN npm run build
-
 # Backend build stage
 FROM golang:1.23-alpine AS builder
 
@@ -47,8 +30,8 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/server .
 
-# Copy frontend build from frontend-builder
-COPY --from=frontend-builder /build/web/dist ./web/dist
+# Copy frontend build (pre-built locally)
+COPY web/dist ./web/dist
 
 # Create storage directory
 RUN mkdir -p /app/storage

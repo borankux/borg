@@ -7,16 +7,18 @@ import (
 	"time"
 
 	"borg/solder/internal/client"
+	"borg/solder/internal/resources"
 )
 
 // Heartbeat manages heartbeat to mothership
 type Heartbeat struct {
-	client      *client.Client
-	runnerID    string
-	interval    time.Duration
-	activeTasks int32
-	status      string // idle, busy, offline
-	stopChan    chan struct{}
+	client           *client.Client
+	runnerID         string
+	interval         time.Duration
+	activeTasks      int32
+	status           string // idle, busy, offline
+	stopChan         chan struct{}
+	resourceSyncCount int32 // Counter for periodic resource sync
 }
 
 // NewHeartbeat creates a new heartbeat manager
@@ -74,7 +76,31 @@ func (h *Heartbeat) SetStatus(status string) {
 func (h *Heartbeat) sendHeartbeat(ctx context.Context) {
 	activeTasks := atomic.LoadInt32(&h.activeTasks)
 	
-	resp, err := h.client.Heartbeat(ctx, h.status, activeTasks)
+	// Sync resources every 10 heartbeats (approximately every 5 minutes with 30s interval)
+	shouldSyncResources := false
+	count := atomic.AddInt32(&h.resourceSyncCount, 1)
+	if count >= 10 {
+		atomic.StoreInt32(&h.resourceSyncCount, 0)
+		shouldSyncResources = true
+	}
+	
+	var resourceUpdate *client.ResourceUpdate
+	if shouldSyncResources {
+		// Detect current resources
+		req := &client.RegisterRunnerRequest{}
+		if err := resources.FillResources(ctx, req); err == nil {
+			resourceUpdate = &client.ResourceUpdate{
+				DiskSpaceGB:      req.DiskSpaceGB,
+				TotalDiskSpaceGB: req.TotalDiskSpaceGB,
+				MemoryGB:         req.MemoryGB,
+				PublicIPs:         req.PublicIPs,
+			}
+			log.Printf("Syncing resources: Disk %.2f/%.2f GB, Memory %.2f GB", 
+				req.DiskSpaceGB, req.TotalDiskSpaceGB, req.MemoryGB)
+		}
+	}
+	
+	resp, err := h.client.Heartbeat(ctx, h.status, activeTasks, resourceUpdate)
 	if err != nil {
 		log.Printf("Failed to send heartbeat: %v", err)
 		return

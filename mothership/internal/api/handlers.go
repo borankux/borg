@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -81,23 +82,94 @@ func (h *Handler) GetJob(c *gin.Context) {
 	c.JSON(http.StatusOK, job)
 }
 
+// CreateJobRequest represents job creation request
+type CreateJobRequest struct {
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	Type            string          `json:"type"`
+	Priority        int32           `json:"priority"`
+	Command         string          `json:"command"`
+	Args            json.RawMessage `json:"args"` // Can be array or null
+	Env             json.RawMessage `json:"env"`   // Can be object or null
+	WorkingDirectory string         `json:"working_directory"`
+	TimeoutSeconds  int64           `json:"timeout_seconds"`
+	MaxRetries      int32           `json:"max_retries"`
+}
+
 // CreateJob creates a new job
 func (h *Handler) CreateJob(c *gin.Context) {
-	var job models.Job
-	if err := c.ShouldBindJSON(&job); err != nil {
+	var req CreateJobRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	
-	// Set defaults
-	if job.Type == "" {
-		job.Type = "shell"
+	// Validate required fields
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
 	}
-	if job.Priority == 0 {
-		job.Priority = 1
+	if req.Command == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "command is required"})
+		return
 	}
 	
-	if err := h.queue.EnqueueJob(&job); err != nil {
+	// Set defaults
+	if req.Type == "" {
+		req.Type = "shell"
+	}
+	if req.Priority == 0 {
+		req.Priority = 1
+	}
+	
+	// Convert to Job model
+	job := &models.Job{
+		Name:            req.Name,
+		Description:     req.Description,
+		Type:            req.Type,
+		Priority:        req.Priority,
+		Command:         req.Command,
+		WorkingDirectory: req.WorkingDirectory,
+		TimeoutSeconds:  req.TimeoutSeconds,
+		MaxRetries:      req.MaxRetries,
+	}
+	
+	// Convert Args and Env to JSON strings
+	if len(req.Args) > 0 {
+		// Validate it's valid JSON
+		var argsArray []interface{}
+		if err := json.Unmarshal(req.Args, &argsArray); err == nil {
+			// Re-marshal to ensure proper formatting
+			if argsJSON, err := json.Marshal(argsArray); err == nil {
+				job.Args = string(argsJSON)
+			} else {
+				job.Args = string(req.Args)
+			}
+		} else {
+			job.Args = string(req.Args)
+		}
+	} else {
+		job.Args = "[]"
+	}
+	
+	if len(req.Env) > 0 {
+		// Validate it's valid JSON
+		var envMap map[string]interface{}
+		if err := json.Unmarshal(req.Env, &envMap); err == nil {
+			// Re-marshal to ensure proper formatting
+			if envJSON, err := json.Marshal(envMap); err == nil {
+				job.Env = string(envJSON)
+			} else {
+				job.Env = string(req.Env)
+			}
+		} else {
+			job.Env = string(req.Env)
+		}
+	} else {
+		job.Env = "{}"
+	}
+	
+	if err := h.queue.EnqueueJob(job); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -141,12 +213,24 @@ func (h *Handler) CancelJob(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "job cancelled"})
 }
 
-// ListRunners returns a list of runners
+// ListRunners returns a list of runners with calculated offline status
 func (h *Handler) ListRunners(c *gin.Context) {
 	var runners []models.Runner
 	if err := h.db.Find(&runners).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	
+	// Calculate offline status based on last heartbeat (2 minutes threshold)
+	now := time.Now()
+	offlineThreshold := 2 * time.Minute
+	
+	for i := range runners {
+		timeSinceHeartbeat := now.Sub(runners[i].LastHeartbeat)
+		if timeSinceHeartbeat > offlineThreshold {
+			// Override status to offline if heartbeat is too old
+			runners[i].Status = "offline"
+		}
 	}
 	
 	c.JSON(http.StatusOK, runners)
@@ -207,6 +291,36 @@ func (h *Handler) RenameRunner(c *gin.Context) {
 	})
 }
 
+// DeleteRunner deletes a runner
+func (h *Handler) DeleteRunner(c *gin.Context) {
+	runnerID := c.Param("id")
+	
+	var runner models.Runner
+	if err := h.db.First(&runner, "id = ?", runnerID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
+		return
+	}
+	
+	// Check if runner has active tasks
+	if runner.ActiveTasks > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "cannot delete runner with active tasks",
+		})
+		return
+	}
+	
+	// Soft delete the runner
+	if err := h.db.Delete(&runner).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "runner deleted successfully",
+	})
+}
+
 // GetTaskLogs returns logs for a task
 func (h *Handler) GetTaskLogs(c *gin.Context) {
 	taskID := c.Param("id")
@@ -235,8 +349,12 @@ type RegisterRunnerRequest struct {
 	Token            string            `json:"token"`
 	// Resource information
 	CPUCores         int32             `json:"cpu_cores"`
+	CPUModel         string            `json:"cpu_model"`
+	CPUFrequencyMHz  int32             `json:"cpu_frequency_mhz"`
 	MemoryGB         float64           `json:"memory_gb"`
-	DiskSpaceGB      float64           `json:"disk_space_gb"`
+	DiskSpaceGB      float64           `json:"disk_space_gb"` // Free/available disk space
+	TotalDiskSpaceGB float64           `json:"total_disk_space_gb"` // Total disk space
+	OSVersion        string            `json:"os_version"`
 	GPUInfo          []GPUInfo         `json:"gpu_info"`
 	PublicIPs        []string          `json:"public_ips"`
 }
@@ -289,8 +407,12 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 		Status:           "idle",
 		Labels:           string(labelsJSON),
 		CPUCores:         req.CPUCores,
+		CPUModel:         req.CPUModel,
+		CPUFrequencyMHz:  req.CPUFrequencyMHz,
 		MemoryGB:         req.MemoryGB,
 		DiskSpaceGB:      req.DiskSpaceGB,
+		TotalDiskSpaceGB: req.TotalDiskSpaceGB,
+		OSVersion:        req.OSVersion,
 		GPUInfo:          string(gpuInfoJSON),
 		PublicIPs:        string(publicIPsJSON),
 		RegisteredAt:     now,
@@ -318,6 +440,15 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 type HeartbeatRequest struct {
 	Status      string `json:"status"` // idle, busy, offline
 	ActiveTasks int32  `json:"active_tasks"`
+	Resources   *ResourceUpdateRequest `json:"resources,omitempty"` // Optional resource update
+}
+
+// ResourceUpdateRequest represents resource information update
+type ResourceUpdateRequest struct {
+	DiskSpaceGB      float64  `json:"disk_space_gb,omitempty"`      // Free/available disk space
+	TotalDiskSpaceGB float64  `json:"total_disk_space_gb,omitempty"` // Total disk space
+	MemoryGB         float64  `json:"memory_gb,omitempty"`
+	PublicIPs        []string `json:"public_ips,omitempty"`
 }
 
 // HeartbeatResponse represents heartbeat response
@@ -342,6 +473,23 @@ func (h *Handler) Heartbeat(c *gin.Context) {
 		"status":         req.Status,
 		"active_tasks":   req.ActiveTasks,
 		"updated_at":     now,
+	}
+	
+	// Update resource information if provided
+	if req.Resources != nil {
+		if req.Resources.DiskSpaceGB > 0 {
+			updates["disk_space_gb"] = req.Resources.DiskSpaceGB
+		}
+		if req.Resources.TotalDiskSpaceGB > 0 {
+			updates["total_disk_space_gb"] = req.Resources.TotalDiskSpaceGB
+		}
+		if req.Resources.MemoryGB > 0 {
+			updates["memory_gb"] = req.Resources.MemoryGB
+		}
+		if len(req.Resources.PublicIPs) > 0 {
+			publicIPsJSON, _ := json.Marshal(req.Resources.PublicIPs)
+			updates["public_ips"] = string(publicIPsJSON)
+		}
 	}
 	
 	if err := h.db.Model(&models.Runner{}).Where("id = ?", runnerID).Updates(updates).Error; err != nil {
@@ -576,5 +724,36 @@ func (h *Handler) UploadArtifact(c *gin.Context) {
 		"success":     true,
 		"message":     "artifact uploaded successfully",
 	})
+}
+
+// DownloadSolder serves the solder executable for download
+func (h *Handler) DownloadSolder(c *gin.Context) {
+	// Try to find the solder binary in common locations
+	possiblePaths := []string{
+		"../solder/solder.exe",  // Relative to mothership directory
+		"./solder.exe",
+		"/app/solder.exe",
+		"solder.exe",
+	}
+	
+	var filePath string
+	for _, path := range possiblePaths {
+		if _, err := os.Stat(path); err == nil {
+			filePath = path
+			break
+		}
+	}
+	
+	if filePath == "" {
+		// Binary not found, return JSON message
+		c.JSON(http.StatusNotFound, gin.H{
+			"message": "Solder binary not found. Please build from source.",
+			"instructions": "See the Download page for build instructions.",
+		})
+		return
+	}
+	
+	// Serve the binary file
+	c.File(filePath)
 }
 

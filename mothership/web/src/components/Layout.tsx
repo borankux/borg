@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { DashboardIcon, JobsIcon, RunnersIcon, LogsIcon } from './Icons'
+import { DashboardIcon, JobsIcon, RunnersIcon, LogsIcon, DownloadIcon } from './Icons'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -13,6 +13,7 @@ export default function Layout({ children }: LayoutProps) {
     { path: '/jobs', label: 'Jobs', icon: JobsIcon },
     { path: '/runners', label: 'Runners', icon: RunnersIcon },
     { path: '/logs', label: 'Logs', icon: LogsIcon },
+    { path: '/download', label: 'Download', icon: DownloadIcon },
   ]
   
   return (

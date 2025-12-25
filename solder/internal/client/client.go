@@ -45,8 +45,12 @@ type RegisterRunnerRequest struct {
 	Token            string            `json:"token"`
 	// Resource information
 	CPUCores         int32             `json:"cpu_cores"`
+	CPUModel         string            `json:"cpu_model"`
+	CPUFrequencyMHz  int32             `json:"cpu_frequency_mhz"`
 	MemoryGB         float64           `json:"memory_gb"`
-	DiskSpaceGB      float64           `json:"disk_space_gb"`
+	DiskSpaceGB      float64           `json:"disk_space_gb"` // Free/available disk space
+	TotalDiskSpaceGB float64           `json:"total_disk_space_gb"` // Total disk space
+	OSVersion        string            `json:"os_version"`
 	GPUInfo          []GPUInfo         `json:"gpu_info"`
 	PublicIPs        []string          `json:"public_ips"`
 }
@@ -196,10 +200,19 @@ func (c *Client) UpdateTaskStatusWithID(ctx context.Context, taskID string, req 
 	return &updateResp, nil
 }
 
+// ResourceUpdate represents resource information update
+type ResourceUpdate struct {
+	DiskSpaceGB      float64  `json:"disk_space_gb,omitempty"`      // Free/available disk space
+	TotalDiskSpaceGB float64  `json:"total_disk_space_gb,omitempty"` // Total disk space
+	MemoryGB         float64  `json:"memory_gb,omitempty"`
+	PublicIPs        []string `json:"public_ips,omitempty"`
+}
+
 // HeartbeatRequest represents heartbeat request
 type HeartbeatRequest struct {
-	Status      string `json:"status"` // idle, busy, offline
-	ActiveTasks int32  `json:"active_tasks"`
+	Status      string         `json:"status"` // idle, busy, offline
+	ActiveTasks int32          `json:"active_tasks"`
+	Resources   *ResourceUpdate `json:"resources,omitempty"` // Optional resource update
 }
 
 // HeartbeatResponse represents heartbeat response
@@ -209,10 +222,11 @@ type HeartbeatResponse struct {
 }
 
 // Heartbeat sends heartbeat to mothership
-func (c *Client) Heartbeat(ctx context.Context, status string, activeTasks int32) (*HeartbeatResponse, error) {
+func (c *Client) Heartbeat(ctx context.Context, status string, activeTasks int32, resources *ResourceUpdate) (*HeartbeatResponse, error) {
 	req := HeartbeatRequest{
 		Status:      status,
 		ActiveTasks: activeTasks,
+		Resources:   resources,
 	}
 
 	body, err := json.Marshal(req)
