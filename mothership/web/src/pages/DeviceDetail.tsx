@@ -64,6 +64,7 @@ export default function DeviceDetail() {
 
       setConnectionStatus('connecting')
       const ws = new WebSocket(wsUrl)
+      ws.binaryType = 'blob' // Handle binary frames as Blob
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -76,12 +77,38 @@ export default function DeviceDetail() {
 
       ws.onmessage = (event) => {
         try {
-          const message: ScreenFrameMessage = JSON.parse(event.data)
-          if (message.type === 'frame' && message.data) {
-            setCurrentFrame(message.data)
+          // Handle binary messages (JPEG frames)
+          if (event.data instanceof Blob) {
+            const reader = new FileReader()
+            reader.onloadend = () => {
+              if (reader.result) {
+                setCurrentFrame(reader.result as string)
+              }
+            }
+            reader.readAsDataURL(event.data)
+          } else if (event.data instanceof ArrayBuffer) {
+            // Handle ArrayBuffer
+            const blob = new Blob([event.data], { type: 'image/jpeg' })
+            const reader = new FileReader()
+            reader.onloadend = () => {
+              if (reader.result) {
+                setCurrentFrame(reader.result as string)
+              }
+            }
+            reader.readAsDataURL(blob)
+          } else {
+            // Fallback: try to parse as JSON (for backward compatibility)
+            try {
+              const message: ScreenFrameMessage = JSON.parse(event.data)
+              if (message.type === 'frame' && message.data) {
+                setCurrentFrame(message.data)
+              }
+            } catch (jsonErr) {
+              console.error('Failed to parse WebSocket message:', jsonErr)
+            }
           }
         } catch (err) {
-          console.error('Failed to parse WebSocket message:', err)
+          console.error('Failed to process WebSocket message:', err)
         }
       }
 

@@ -1,7 +1,6 @@
 package websocket
 
 import (
-	"encoding/base64"
 	"log"
 	"net/http"
 	"time"
@@ -107,9 +106,8 @@ func HandleAgentScreenWebSocket(hub *ScreenHub) gin.HandlerFunc {
 			}
 			
 			if messageType == websocket.BinaryMessage {
-				// Convert binary JPEG to base64 data URL format for viewers
-				frameDataURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(frameData)
-				hub.BroadcastFrame(runnerID, []byte(frameDataURL))
+				// Broadcast binary JPEG frame directly (no base64 conversion)
+				hub.BroadcastFrame(runnerID, frameData)
 			} else if messageType == websocket.TextMessage {
 				// Handle text messages (ping/pong, etc.)
 				log.Printf("Received text message from agent %s: %s", runnerID, string(frameData))

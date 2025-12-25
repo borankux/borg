@@ -1,7 +1,6 @@
 package websocket
 
 import (
-	"encoding/json"
 	"log"
 	"sync"
 	"time"
@@ -139,12 +138,8 @@ func (h *ScreenHub) ViewerCount(runnerID string) int {
 	return 0
 }
 
-// ScreenFrameMessage represents a frame message sent to viewers
-type ScreenFrameMessage struct {
-	Type      string `json:"type"`
-	Data      string `json:"data"` // base64 encoded image
-	Timestamp int64  `json:"timestamp"`
-}
+// ScreenFrameMessage is deprecated - frames are now sent as binary messages
+// Kept for reference but no longer used
 
 // NewScreenClient creates a new screen viewing client
 func NewScreenClient(hub *ScreenHub, conn *websocket.Conn, runnerID string) *ScreenClient {
@@ -216,33 +211,11 @@ func (c *ScreenClient) WritePump() {
 				return
 			}
 			
-			// Create frame message
-			msg := ScreenFrameMessage{
-				Type:      "frame",
-				Data:      string(frameData), // frameData is already base64 data URL string
-				Timestamp: time.Now().Unix(),
-			}
-			
-			msgJSON, err := json.Marshal(msg)
+			// Send binary frame directly (no base64 encoding, no JSON)
+			// frameData is binary JPEG data
+			err := c.conn.WriteMessage(websocket.BinaryMessage, frameData)
 			if err != nil {
-				log.Printf("Error marshaling frame message: %v", err)
-				continue
-			}
-			
-			w, err := c.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			w.Write(msgJSON)
-			
-			// Add queued messages to current websocket message
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.send)
-			}
-			
-			if err := w.Close(); err != nil {
+				log.Printf("Error writing binary frame: %v", err)
 				return
 			}
 			
