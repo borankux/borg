@@ -8,7 +8,7 @@ import (
 
 type Runner struct {
 	ID               string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
-	DeviceID         string    `gorm:"uniqueIndex;type:varchar(36)" json:"device_id"` // Unique device identifier that persists through renames (nullable for existing records)
+	DeviceID         string    `gorm:"uniqueIndex;type:varchar(64)" json:"device_id"` // Unique device identifier that persists through renames (SHA256 hash, 64 chars)
 	Name             string    `gorm:"not null;type:varchar(255)" json:"name"`
 	Hostname         string    `gorm:"not null;type:varchar(255)" json:"hostname"`
 	OS               string    `gorm:"not null;type:varchar(100)" json:"os"`
