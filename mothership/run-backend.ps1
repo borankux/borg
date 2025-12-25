@@ -15,7 +15,7 @@ if (-not (Test-Path "./storage")) {
 
 # Run the Go server
 Write-Host "Connecting to database at localhost:5432" -ForegroundColor Yellow
-Write-Host "API will be available at http://localhost:8080" -ForegroundColor Yellow
+Write-Host "API will be available at http://0.0.0.0:8080 (accessible from all network interfaces)" -ForegroundColor Yellow
 Write-Host ""
 
 go run cmd/server/main.go

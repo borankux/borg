@@ -65,13 +65,13 @@ func main() {
 		httpPort = "8080"
 	}
 	
-	log.Printf("Starting HTTP server on port %s", httpPort)
-	log.Printf("WebSocket endpoint: ws://localhost:%s/ws", httpPort)
-	log.Printf("REST API endpoint: http://localhost:%s/api/v1", httpPort)
-	log.Printf("Web dashboard: http://localhost:%s", httpPort)
-	log.Printf("Runner API endpoint: http://localhost:%s/api/v1/runners", httpPort)
+	log.Printf("Starting HTTP server on 0.0.0.0:%s", httpPort)
+	log.Printf("WebSocket endpoint: ws://0.0.0.0:%s/ws", httpPort)
+	log.Printf("REST API endpoint: http://0.0.0.0:%s/api/v1", httpPort)
+	log.Printf("Web dashboard: http://0.0.0.0:%s", httpPort)
+	log.Printf("Runner API endpoint: http://0.0.0.0:%s/api/v1/runners", httpPort)
 	
-	if err := http.ListenAndServe(":"+httpPort, apiServer.GetRouter()); err != nil {
+	if err := http.ListenAndServe("0.0.0.0:"+httpPort, apiServer.GetRouter()); err != nil {
 		log.Fatalf("HTTP server failed: %v", err)
 	}
 }
