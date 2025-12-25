@@ -15,10 +15,12 @@ import (
 	"time"
 
 	"borg/solder/internal/client"
+	"borg/solder/internal/config"
 	"borg/solder/internal/downloader"
 	"borg/solder/internal/executor"
 	"borg/solder/internal/heartbeat"
 	"borg/solder/internal/resources"
+	"borg/solder/internal/screencapture"
 	"borg/solder/internal/uploader"
 )
 
@@ -34,67 +36,45 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  RUNNER_TOKEN     - Runner authentication token\n")
 		fmt.Fprintf(os.Stderr, "  WORK_DIR         - Working directory for tasks\n")
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  %s --config config.yaml\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s --mothership https://192.168.1.100:8080 --name my-runner\n", os.Args[0])
 	}
 
 	// Command-line flags
-	var (
-		serverAddrFlag = flag.String("mothership", "", "Mothership server address (e.g., https://ip:port or http://ip:port)")
-		runnerNameFlag = flag.String("name", "", "Runner name")
-		runnerTokenFlag = flag.String("token", "", "Runner authentication token")
-		workDirFlag = flag.String("work-dir", "", "Working directory for tasks")
-	)
+	var configPath = flag.String("config", "", "Path to config file (YAML)")
 	flag.Parse()
 
-	// Configuration with priority: flag > environment variable > default
-	serverAddr := *serverAddrFlag
-	if serverAddr == "" {
-		serverAddr = os.Getenv("MOTHERSHIP_ADDR")
-	}
-	if serverAddr == "" {
-		serverAddr = "http://localhost:8080"
+	// Load configuration
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	runnerName := *runnerNameFlag
-	if runnerName == "" {
-		runnerName = os.Getenv("RUNNER_NAME")
-	}
+	// Determine runner name
+	runnerName := cfg.Agent.Name
 	if runnerName == "" {
 		hostname, _ := os.Hostname()
 		runnerName = hostname
 	}
 
-	runnerToken := *runnerTokenFlag
-	if runnerToken == "" {
-		runnerToken = os.Getenv("RUNNER_TOKEN")
-	}
-	if runnerToken == "" {
-		runnerToken = "default-token" // In production, require token
-	}
-
-	workDir := *workDirFlag
-	if workDir == "" {
-		workDir = os.Getenv("WORK_DIR")
-	}
-	if workDir == "" {
-		workDir = "./work"
-	}
-
-	maxConcurrentTasks := int32(1)
+	// Create screen capture service to check availability
+	screenCapture := screencapture.NewCaptureService(cfg.ScreenCapture)
+	screenMonitoringEnabled := screenCapture.IsEnabled()
 
 	// Create client
-	httpClient := client.NewClient(serverAddr, "")
+	httpClient := client.NewClient(cfg.Server.Address, "")
 
 	// Register runner
 	ctx := context.Background()
 	registerReq := &client.RegisterRunnerRequest{
-		Name:             runnerName,
-		Hostname:         getHostname(),
-		OS:               runtime.GOOS,
-		Architecture:     runtime.GOARCH,
-		MaxConcurrentTasks: maxConcurrentTasks,
-		Labels:           getLabels(),
-		Token:            runnerToken,
+		Name:                   runnerName,
+		Hostname:               getHostname(),
+		OS:                     runtime.GOOS,
+		Architecture:           runtime.GOARCH,
+		MaxConcurrentTasks:     cfg.Tasks.MaxConcurrent,
+		Labels:                 getLabels(),
+		Token:                  cfg.Agent.Token,
+		ScreenMonitoringEnabled: screenMonitoringEnabled,
 	}
 
 	// Detect and fill resource information
@@ -118,26 +98,36 @@ func main() {
 	log.Printf("Registered runner: %s", runnerID)
 
 	// Recreate client with runner ID
-	httpClient = client.NewClient(serverAddr, runnerID)
+	httpClient = client.NewClient(cfg.Server.Address, runnerID)
 
 	// Create executor
-	exec, err := executor.NewExecutor(workDir)
+	exec, err := executor.NewExecutor(cfg.Work.Directory)
 	if err != nil {
 		log.Fatalf("Failed to create executor: %v", err)
 	}
 
 	// Create downloader
-	dl := downloader.NewDownloader(httpClient, workDir)
+	dl := downloader.NewDownloader(httpClient, cfg.Work.Directory)
 
 	// Create uploader
 	up := uploader.NewUploader(httpClient)
 
-	// Create heartbeat
-	hb := heartbeat.NewHeartbeat(httpClient, runnerID, 30*time.Second)
+	// Create heartbeat with config interval
+	hb := heartbeat.NewHeartbeat(httpClient, runnerID, time.Duration(cfg.Heartbeat.IntervalSeconds)*time.Second)
 
 	// Context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start screen capture service
+	if screenCapture.IsEnabled() {
+		go screenCapture.Start(ctx, func(data []byte) error {
+			return httpClient.UploadScreenshot(ctx, data)
+		})
+		log.Println("Screen capture enabled")
+	} else {
+		log.Println("Screen capture not available (disabled or no desktop environment)")
+	}
 
 	// Start heartbeat
 	go hb.Start(ctx)
@@ -158,7 +148,7 @@ func main() {
 	}()
 
 	// Process jobs
-	semaphore := make(chan struct{}, maxConcurrentTasks)
+	semaphore := make(chan struct{}, cfg.Tasks.MaxConcurrent)
 
 	go func() {
 		for job := range jobChan {
@@ -171,7 +161,7 @@ func main() {
 
 					taskID := j.TaskID
 					taskNum := atomic.AddInt32(&taskCounter, 1)
-					taskDir := filepath.Join(workDir, fmt.Sprintf("task_%s_%d", taskID, taskNum))
+					taskDir := filepath.Join(cfg.Work.Directory, fmt.Sprintf("task_%s_%d", taskID, taskNum))
 
 					activeTasks.Store(taskID, true)
 					hb.SetActiveTasks(int32(len(semaphore)))

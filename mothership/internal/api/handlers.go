@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -355,9 +356,10 @@ type RegisterRunnerRequest struct {
 	MemoryGB         float64   `json:"memory_gb"`
 	DiskSpaceGB      float64   `json:"disk_space_gb"`       // Free/available disk space
 	TotalDiskSpaceGB float64   `json:"total_disk_space_gb"` // Total disk space
-	OSVersion        string    `json:"os_version"`
-	GPUInfo          []GPUInfo `json:"gpu_info"`
-	PublicIPs        []string  `json:"public_ips"`
+	OSVersion              string            `json:"os_version"`
+	GPUInfo                []GPUInfo         `json:"gpu_info"`
+	PublicIPs              []string          `json:"public_ips"`
+	ScreenMonitoringEnabled bool             `json:"screen_monitoring_enabled"`
 }
 
 // GPUInfo represents GPU information
@@ -397,7 +399,7 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 	// Check if a runner with the same hostname already exists
 	var existingRunner models.Runner
 	err := h.db.Where("hostname = ?", req.Hostname).First(&existingRunner).Error
-	
+
 	if err == nil {
 		// Runner exists - update it instead of creating a new one
 		existingRunner.Name = req.Name
@@ -415,6 +417,7 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 		existingRunner.OSVersion = req.OSVersion
 		existingRunner.GPUInfo = string(gpuInfoJSON)
 		existingRunner.PublicIPs = string(publicIPsJSON)
+		existingRunner.ScreenMonitoringEnabled = req.ScreenMonitoringEnabled
 		existingRunner.LastHeartbeat = now
 		existingRunner.UpdatedAt = now
 
@@ -433,7 +436,7 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Check if error is "not found" (expected) or a real database error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		c.JSON(http.StatusInternalServerError, RegisterRunnerResponse{
@@ -464,12 +467,13 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 		DiskSpaceGB:        req.DiskSpaceGB,
 		TotalDiskSpaceGB:   req.TotalDiskSpaceGB,
 		OSVersion:          req.OSVersion,
-		GPUInfo:            string(gpuInfoJSON),
-		PublicIPs:          string(publicIPsJSON),
-		RegisteredAt:       now,
-		LastHeartbeat:      now,
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		GPUInfo:                string(gpuInfoJSON),
+		PublicIPs:              string(publicIPsJSON),
+		ScreenMonitoringEnabled: req.ScreenMonitoringEnabled,
+		RegisteredAt:           now,
+		LastHeartbeat:          now,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 
 	if err := h.db.Create(runner).Error; err != nil {
@@ -775,6 +779,75 @@ func (h *Handler) UploadArtifact(c *gin.Context) {
 		"success":     true,
 		"message":     "artifact uploaded successfully",
 	})
+}
+
+// UploadScreenshot handles screenshot upload from runner
+func (h *Handler) UploadScreenshot(c *gin.Context) {
+	runnerID := c.Param("id")
+
+	var runner models.Runner
+	if err := h.db.First(&runner, "id = ?", runnerID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
+		return
+	}
+
+	file, err := c.FormFile("screenshot")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer src.Close()
+
+	screenshotID := uuid.New().String()
+	filename := fmt.Sprintf("%d_%s.jpg", time.Now().Unix(), screenshotID)
+	path, err := h.storage.SaveScreenshot(runnerID, filename, src)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"screenshot_id": screenshotID,
+		"path":          path,
+		"success":       true,
+	})
+}
+
+// GetScreenshots returns list of screenshots for a runner
+func (h *Handler) GetScreenshots(c *gin.Context) {
+	runnerID := c.Param("id")
+
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+
+	screenshots, err := h.storage.ListScreenshots(runnerID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"screenshots": screenshots,
+	})
+}
+
+// GetScreenshot serves a specific screenshot
+func (h *Handler) GetScreenshot(c *gin.Context) {
+	runnerID := c.Param("id")
+	filename := c.Param("filename")
+
+	screenshotPath := h.storage.GetScreenshotPath(runnerID, filename)
+	if screenshotPath == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "screenshot not found"})
+		return
+	}
+
+	c.File(screenshotPath)
 }
 
 // DownloadSolder serves the solder executable for download

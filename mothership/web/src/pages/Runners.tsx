@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import GlassCard from '../components/GlassCard'
 import Modal from '../components/Modal'
-import { EditIcon, CheckIcon, XIcon, TrashIcon, CPUIcon, RAMIcon, DiskIcon, IPIcon, OSIcon, GPUIcon } from '../components/Icons'
+import { EditIcon, CheckIcon, XIcon, TrashIcon, CPUIcon, RAMIcon, DiskIcon, IPIcon, OSIcon, GPUIcon, MoreIcon, MonitorIcon } from '../components/Icons'
 
 interface GPUInfo {
   name: string
@@ -31,12 +32,16 @@ interface Runner {
   os_version?: string
   gpu_info?: string
   public_ips?: string
+  screen_monitoring_enabled?: boolean
 }
 
 export default function Runners() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [editingRunner, setEditingRunner] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null)
+  const menuRefs = useRef<{ [key: string]: HTMLDivElement | null }>({})
   const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; runnerId: string; runnerName: string }>({
     isOpen: false,
     runnerId: '',
@@ -172,6 +177,23 @@ export default function Runners() {
     }
   }
 
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (openMenuId) {
+        const menuElement = menuRefs.current[openMenuId]
+        if (menuElement && !menuElement.contains(event.target as Node)) {
+          setOpenMenuId(null)
+        }
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [openMenuId])
+
   return (
     <div className="p-8">
       <h1 className="text-3xl font-bold mb-8">Runners</h1>
@@ -193,6 +215,15 @@ export default function Runners() {
                   <span className={`text-xs font-medium capitalize ${getStatusColor(runner.status)}`}>
                     {runner.status === 'offline' ? 'Offline' : runner.status}
                   </span>
+                  {/* Screen Monitoring Indicator */}
+                  <div 
+                    className={`w-2 h-2 rounded-full ${
+                      runner.screen_monitoring_enabled 
+                        ? 'bg-green-400' 
+                        : 'bg-gray-500'
+                    }`}
+                    title={runner.screen_monitoring_enabled ? 'Screen monitoring enabled' : 'Screen monitoring disabled'}
+                  ></div>
                 </div>
 
                 {/* Center: Solder Name */}
@@ -248,8 +279,40 @@ export default function Runners() {
                 </div>
 
                 {/* Right: Actions */}
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 relative">
                   <span className="text-xs text-gray-400">{runner.active_tasks}/{runner.max_concurrent_tasks}</span>
+                  
+                  {/* Three-dot menu */}
+                  <div className="relative" ref={(el) => { menuRefs.current[runner.id] = el }}>
+                    <button
+                      onClick={() => setOpenMenuId(openMenuId === runner.id ? null : runner.id)}
+                      className="text-gray-400 hover:text-white p-1"
+                      title="More options"
+                    >
+                      <MoreIcon />
+                    </button>
+                    
+                    {openMenuId === runner.id && (
+                      <div className="absolute right-0 mt-1 w-40 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-10">
+                        <button
+                          onClick={() => {
+                            navigate(`/runners/${runner.id}/monitor`)
+                            setOpenMenuId(null)
+                          }}
+                          disabled={!runner.screen_monitoring_enabled}
+                          className={`w-full text-left px-4 py-2 text-sm ${
+                            runner.screen_monitoring_enabled
+                              ? 'text-white hover:bg-gray-700'
+                              : 'text-gray-500 cursor-not-allowed'
+                          } flex items-center gap-2`}
+                        >
+                          <MonitorIcon />
+                          Monitor
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  
                   <button
                     onClick={() => handleDelete(runner.id, runner.name)}
                     className="text-red-400 hover:text-red-300"

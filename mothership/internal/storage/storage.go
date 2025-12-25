@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +26,7 @@ func NewStorage(basePath string) (*Storage, error) {
 	}
 	
 	// Create subdirectories
-	dirs := []string{"files", "artifacts", "tmp"}
+	dirs := []string{"files", "artifacts", "tmp", "screenshots"}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(filepath.Join(basePath, dir), 0755); err != nil {
 			return nil, fmt.Errorf("failed to create %s directory: %w", dir, err)
@@ -215,5 +217,75 @@ func (s *Storage) DeleteArtifact(artifactID string) error {
 	}
 	
 	return os.Remove(filePath)
+}
+
+// SaveScreenshot saves a screenshot for a runner
+func (s *Storage) SaveScreenshot(runnerID, filename string, reader io.Reader) (string, error) {
+	runnerDir := filepath.Join(s.basePath, "screenshots", runnerID)
+	if err := os.MkdirAll(runnerDir, 0755); err != nil {
+		return "", err
+	}
+
+	filePath := filepath.Join(runnerDir, filename)
+	file, err := os.Create(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	if _, err := io.Copy(file, reader); err != nil {
+		return "", err
+	}
+
+	return filePath, nil
+}
+
+// ListScreenshots gets the list of screenshots for a runner
+func (s *Storage) ListScreenshots(runnerID string, limit int) ([]map[string]interface{}, error) {
+	runnerDir := filepath.Join(s.basePath, "screenshots", runnerID)
+
+	files, err := os.ReadDir(runnerDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []map[string]interface{}{}, nil
+		}
+		return nil, err
+	}
+
+	var screenshots []map[string]interface{}
+
+	for i := len(files) - 1; i >= 0 && len(screenshots) < limit; i-- {
+		file := files[i]
+		if !file.IsDir() && (strings.HasSuffix(file.Name(), ".jpg") || strings.HasSuffix(file.Name(), ".png")) {
+			info, err := file.Info()
+			if err != nil {
+				continue
+			}
+
+			screenshots = append(screenshots, map[string]interface{}{
+				"filename":  file.Name(),
+				"timestamp": info.ModTime().Unix(),
+				"size":      info.Size(),
+			})
+		}
+	}
+
+	// Sort by timestamp descending (newest first)
+	sort.Slice(screenshots, func(i, j int) bool {
+		ti := screenshots[i]["timestamp"].(int64)
+		tj := screenshots[j]["timestamp"].(int64)
+		return ti > tj
+	})
+
+	return screenshots, nil
+}
+
+// GetScreenshotPath returns the file path for a screenshot
+func (s *Storage) GetScreenshotPath(runnerID, filename string) string {
+	filePath := filepath.Join(s.basePath, "screenshots", runnerID, filename)
+	if _, err := os.Stat(filePath); err != nil {
+		return ""
+	}
+	return filePath
 }
 

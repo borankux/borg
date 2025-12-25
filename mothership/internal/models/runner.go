@@ -25,9 +25,10 @@ type Runner struct {
 	DiskSpaceGB      float64   `gorm:"default:0" json:"disk_space_gb"` // Free/available disk space
 	TotalDiskSpaceGB float64   `gorm:"default:0" json:"total_disk_space_gb"` // Total disk space
 	OSVersion        string    `gorm:"type:varchar(100)" json:"os_version"`
-	GPUInfo          string    `gorm:"type:text" json:"gpu_info"` // JSON array of GPU info
-	PublicIPs        string    `gorm:"type:text" json:"public_ips"` // JSON array of IP addresses
-	RegisteredAt     time.Time `gorm:"not null" json:"registered_at"`
+	GPUInfo                string    `gorm:"type:text" json:"gpu_info"` // JSON array of GPU info
+	PublicIPs              string    `gorm:"type:text" json:"public_ips"` // JSON array of IP addresses
+	ScreenMonitoringEnabled bool     `gorm:"default:false" json:"screen_monitoring_enabled"`
+	RegisteredAt           time.Time `gorm:"not null" json:"registered_at"`
 	LastHeartbeat    time.Time `gorm:"not null" json:"last_heartbeat"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`

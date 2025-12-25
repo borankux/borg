@@ -50,9 +50,10 @@ type RegisterRunnerRequest struct {
 	MemoryGB         float64           `json:"memory_gb"`
 	DiskSpaceGB      float64           `json:"disk_space_gb"` // Free/available disk space
 	TotalDiskSpaceGB float64           `json:"total_disk_space_gb"` // Total disk space
-	OSVersion        string            `json:"os_version"`
-	GPUInfo          []GPUInfo         `json:"gpu_info"`
-	PublicIPs        []string          `json:"public_ips"`
+	OSVersion              string            `json:"os_version"`
+	GPUInfo                []GPUInfo         `json:"gpu_info"`
+	PublicIPs              []string          `json:"public_ips"`
+	ScreenMonitoringEnabled bool             `json:"screen_monitoring_enabled"`
 }
 
 // GPUInfo represents GPU information
@@ -379,4 +380,43 @@ func (c *Client) pollForJob(ctx context.Context) *Job {
 		return nil
 	}
 	return job
+}
+
+// UploadScreenshot uploads a screenshot to mothership
+func (c *Client) UploadScreenshot(ctx context.Context, screenshotData []byte) error {
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+
+	fileWriter, err := writer.CreateFormFile("screenshot", "screenshot.jpg")
+	if err != nil {
+		return fmt.Errorf("failed to create file field: %w", err)
+	}
+
+	if _, err := fileWriter.Write(screenshotData); err != nil {
+		return fmt.Errorf("failed to write screenshot data: %w", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/api/v1/runners/"+c.runnerID+"/screenshots", &requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return nil
 }

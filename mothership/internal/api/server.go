@@ -75,6 +75,11 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, storage *storage
 		api.POST("/tasks/:id/status", handler.UpdateTaskStatus)
 		api.GET("/files/:id/download", handler.DownloadFile)
 		api.POST("/artifacts/upload", handler.UploadArtifact)
+		
+		// Screenshot endpoints
+		api.POST("/runners/:id/screenshots", handler.UploadScreenshot)
+		api.GET("/runners/:id/screenshots", handler.GetScreenshots)
+		api.GET("/runners/:id/screenshots/:filename", handler.GetScreenshot)
 	}
 	
 	// Serve static files (web app) - must be last

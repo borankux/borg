@@ -33,8 +33,8 @@ COPY --from=builder /app/server .
 # Copy frontend build (pre-built locally)
 COPY web/dist ./web/dist
 
-# Create storage directory
-RUN mkdir -p /app/storage
+# Create storage directories (screenshots subdirectory will be created automatically by storage service)
+RUN mkdir -p /app/storage/{files,artifacts,tmp,screenshots}
 
 EXPOSE 8080
 
