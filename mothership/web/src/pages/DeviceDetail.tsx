@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import axios from 'axios'
@@ -46,22 +46,16 @@ export default function DeviceDetail() {
     refetchInterval: 5000,
   })
 
-  const isScreenMonitoringEnabled = useMemo(() => {
-    return runner?.screen_monitoring_enabled === true
-  }, [runner?.screen_monitoring_enabled])
-
-  // Always call useQuery unconditionally - use enabled to control execution
-  const screenshotsEnabled = !!id && !!runner && isScreenMonitoringEnabled
-  const screenshotsInterval = isScreenMonitoringEnabled ? 5000 : false as const
-  
+  // Always call useQuery unconditionally with stable config to avoid hook order issues
+  // Query is always enabled when id exists - we'll handle disabled state in UI
   const { data: screenshotsData, isLoading: screenshotsLoading } = useQuery<{ screenshots: Screenshot[] }>({
     queryKey: ['screenshots', id],
     queryFn: async () => {
       const res = await axios.get(`/api/v1/runners/${id}/screenshots?limit=50`)
       return res.data
     },
-    enabled: screenshotsEnabled,
-    refetchInterval: screenshotsInterval,
+    enabled: !!id, // Always enabled when id exists - stable value
+    refetchInterval: 5000, // Stable value - always the same
   })
 
   const screenshots = screenshotsData?.screenshots || []
