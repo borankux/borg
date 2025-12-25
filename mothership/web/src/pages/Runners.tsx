@@ -107,19 +107,21 @@ export default function Runners() {
     )
   }
   
-  const parsePublicIPs = (ipsStr?: string): string[] => {
+  const parsePublicIPs = (ipsStr?: string | null): string[] => {
     if (!ipsStr) return []
     try {
-      return JSON.parse(ipsStr)
+      const parsed = JSON.parse(ipsStr)
+      return Array.isArray(parsed) ? parsed : []
     } catch {
       return []
     }
   }
 
-  const parseGPUInfo = (gpuInfoStr?: string): GPUInfo[] => {
+  const parseGPUInfo = (gpuInfoStr?: string | null): GPUInfo[] => {
     if (!gpuInfoStr) return []
     try {
-      return JSON.parse(gpuInfoStr)
+      const parsed = JSON.parse(gpuInfoStr)
+      return Array.isArray(parsed) ? parsed : []
     } catch {
       return []
     }
@@ -140,10 +142,11 @@ export default function Runners() {
     return `${mhz} MHz`
   }
 
-  const filterIPv4 = (ips: string[]): string[] => {
+  const filterIPv4 = (ips: string[] | null | undefined): string[] => {
+    if (!ips || !Array.isArray(ips)) return []
     return ips.filter(ip => {
       // Simple IPv4 check (contains dots and no colons)
-      return ip.includes('.') && !ip.includes(':')
+      return ip && ip.includes('.') && !ip.includes(':')
     })
   }
 
@@ -170,7 +173,7 @@ export default function Runners() {
       <h1 className="text-3xl font-bold mb-8">Runners</h1>
       
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {runners?.map((runner) => {
+        {(runners || []).map((runner) => {
           const publicIPs = parsePublicIPs(runner.public_ips)
           const ipv4Addresses = filterIPv4(publicIPs)
           const gpus = parseGPUInfo(runner.gpu_info)
