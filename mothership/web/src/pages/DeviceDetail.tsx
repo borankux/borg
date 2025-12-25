@@ -36,7 +36,7 @@ export default function DeviceDetail() {
   const [currentFrame, setCurrentFrame] = useState<string | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected')
   const wsRef = useRef<WebSocket | null>(null)
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const reconnectTimeoutRef = useRef<number | null>(null)
 
   const { data: runner, isLoading: runnerLoading } = useQuery<Runner>({
     queryKey: ['runner', id],

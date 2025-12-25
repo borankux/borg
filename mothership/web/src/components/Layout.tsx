@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import { DashboardIcon, JobsIcon, RunnersIcon, LogsIcon, DownloadIcon } from './Icons'
+import { useAuth } from '../contexts/AuthContext'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -7,6 +8,7 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const location = useLocation()
+  const { user, logout } = useAuth()
   
   const navItems = [
     { path: '/', label: 'Dashboard', icon: DashboardIcon },
@@ -43,6 +45,17 @@ export default function Layout({ children }: LayoutProps) {
             )
           })}
         </nav>
+        <div className="p-4 border-t border-gray-800">
+          <div className="text-sm text-gray-400 mb-2">
+            Logged in as <span className="text-white font-medium">{user?.username}</span>
+          </div>
+          <button
+            onClick={logout}
+            className="w-full px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors text-sm"
+          >
+            Logout
+          </button>
+        </div>
       </div>
       
       {/* Main content */}
