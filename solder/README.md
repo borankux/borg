@@ -9,7 +9,7 @@ The worker for the distributed task execution system.
 - Downloads required files
 - Uploads execution artifacts
 - Sends heartbeats for health monitoring
-- Screen monitoring (Windows and Linux only - disabled on macOS due to API deprecation)
+- Screen monitoring (Windows, Linux, and macOS 12.3+)
 
 ## Setup
 
@@ -18,7 +18,7 @@ The worker for the distributed task execution system.
 go mod download
 ```
 
-**Note for macOS users:** Screen capture is disabled on macOS due to API deprecation in macOS 15+. The `kbinani/screenshot` library uses deprecated APIs that are no longer available. Screen monitoring will be automatically disabled on macOS builds. If you encounter build errors related to the screenshot library, you can safely ignore them as the code uses build tags to exclude this functionality on macOS.
+**Note for macOS users:** Screen capture is supported on macOS 12.3+ using ScreenCaptureKit. You must grant Screen Recording permission in System Settings > Privacy & Security > Screen Recording. See `internal/screencapture/README_MACOS.md` for detailed setup instructions.
 
 2. Run solder with command-line flags or config file:
 ```bash

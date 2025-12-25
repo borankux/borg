@@ -68,6 +68,26 @@ func main() {
 	// Create screen capture service to check availability
 	screenCapture := screencapture.NewCaptureService(cfg.ScreenCapture)
 	screenMonitoringEnabled := screenCapture.IsEnabled()
+	
+	// Log permission status on macOS
+	if runtime.GOOS == "darwin" {
+		if screenMonitoringEnabled {
+			log.Println("✅ Screen Recording permission granted - screen monitoring enabled")
+		} else if cfg.ScreenCapture.Enabled {
+			log.Printf(`
+⚠️  Screen Recording Permission Required
+
+Screen monitoring is disabled because Screen Recording permission is not granted.
+
+To enable screen monitoring:
+1. Open System Settings > Privacy & Security > Screen Recording
+2. Enable the checkbox for: %s
+3. Restart the agent
+
+The agent will continue running without screen monitoring.
+`, os.Args[0])
+		}
+	}
 
 	// Create client
 	httpClient := client.NewClient(cfg.Server.Address, "")
