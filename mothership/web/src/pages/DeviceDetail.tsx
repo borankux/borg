@@ -46,14 +46,16 @@ export default function DeviceDetail() {
     refetchInterval: 5000,
   })
 
+  const isScreenMonitoringEnabled = runner?.screen_monitoring_enabled === true
+
   const { data: screenshotsData, isLoading: screenshotsLoading } = useQuery<{ screenshots: Screenshot[] }>({
     queryKey: ['screenshots', id],
     queryFn: async () => {
       const res = await axios.get(`/api/v1/runners/${id}/screenshots?limit=50`)
       return res.data
     },
-    enabled: !!id && !!runner?.screen_monitoring_enabled,
-    refetchInterval: runner?.screen_monitoring_enabled ? 5000 : false,
+    enabled: !!id && isScreenMonitoringEnabled,
+    refetchInterval: isScreenMonitoringEnabled ? 5000 : false,
   })
 
   const screenshots = screenshotsData?.screenshots || []
@@ -62,8 +64,11 @@ export default function DeviceDetail() {
     if (screenshots.length > 0 && currentIndex >= screenshots.length) {
       setCurrentIndex(screenshots.length - 1)
     }
+  }, [screenshots.length, currentIndex])
+
+  useEffect(() => {
     setImageError(false)
-  }, [screenshots, currentIndex])
+  }, [currentIndex])
 
   const parsePublicIPs = (ipsStr?: string | null): string[] => {
     if (!ipsStr || ipsStr === 'null' || ipsStr === 'undefined') return []
