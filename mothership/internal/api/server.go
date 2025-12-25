@@ -52,11 +52,8 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 	// API routes
 	api := router.Group("/api/v1")
 	{
-		// Auth routes (public)
-		auth := api.Group("/auth")
-		{
-			auth.POST("/login", handler.Login)
-		}
+		// Auth routes (public) - register directly to avoid conflicts
+		api.POST("/auth/login", handler.Login)
 		
 		// Protected dashboard endpoints (require authentication)
 		protected := api.Group("")

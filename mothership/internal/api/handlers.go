@@ -1025,6 +1025,9 @@ type LoginResponse struct {
 
 // Login handles user authentication
 func (h *Handler) Login(c *gin.Context) {
+	// Debug logging
+	fmt.Printf("Login endpoint called: %s %s\n", c.Request.Method, c.Request.URL.Path)
+	
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
