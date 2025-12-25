@@ -1,3 +1,6 @@
+//go:build !darwin
+// +build !darwin
+
 package screencapture
 
 import (
@@ -61,7 +64,7 @@ func (s *CaptureService) CaptureScreen() ([]byte, error) {
 		return nil, fmt.Errorf("failed to capture screen: %w", err)
 	}
 
-	// Resize if needed (resizeImage returns image.Image interface)
+	// Resize if needed
 	var img image.Image = s.resizeImage(capturedImg)
 
 	// Encode as JPEG with quality settings

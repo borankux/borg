@@ -36,13 +36,14 @@ func (c *Client) Close() error {
 
 // RegisterRunnerRequest represents runner registration request
 type RegisterRunnerRequest struct {
-	Name             string            `json:"name"`
-	Hostname         string            `json:"hostname"`
-	OS               string            `json:"os"`
-	Architecture     string            `json:"architecture"`
-	MaxConcurrentTasks int32           `json:"max_concurrent_tasks"`
-	Labels           map[string]string `json:"labels"`
-	Token            string            `json:"token"`
+	Name               string            `json:"name"`
+	Hostname           string            `json:"hostname"`
+	DeviceID           string            `json:"device_id"`
+	OS                 string            `json:"os"`
+	Architecture       string            `json:"architecture"`
+	MaxConcurrentTasks int32             `json:"max_concurrent_tasks"`
+	Labels             map[string]string `json:"labels"`
+	Token              string            `json:"token"`
 	// Resource information
 	CPUCores         int32             `json:"cpu_cores"`
 	CPUModel         string            `json:"cpu_model"`

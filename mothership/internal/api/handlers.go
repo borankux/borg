@@ -344,6 +344,7 @@ func (h *Handler) GetTaskLogs(c *gin.Context) {
 type RegisterRunnerRequest struct {
 	Name               string            `json:"name"`
 	Hostname           string            `json:"hostname"`
+	DeviceID           string            `json:"device_id"`
 	OS                 string            `json:"os"`
 	Architecture       string            `json:"architecture"`
 	MaxConcurrentTasks int32             `json:"max_concurrent_tasks"`
@@ -376,7 +377,8 @@ type RegisterRunnerResponse struct {
 	Message  string `json:"message"`
 }
 
-// RegisterRunner registers a new runner or updates an existing one if the same hostname is found
+// RegisterRunner registers a new runner or updates an existing one if the same device_id is found
+// Falls back to hostname matching for backward compatibility if device_id is not provided
 func (h *Handler) RegisterRunner(c *gin.Context) {
 	var req RegisterRunnerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -396,13 +398,22 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 	gpuInfoJSON, _ := json.Marshal(req.GPUInfo)
 	publicIPsJSON, _ := json.Marshal(req.PublicIPs)
 
-	// Check if a runner with the same hostname already exists
+	// Check if a runner with the same device_id already exists (including soft-deleted)
+	// If device_id is not provided, fall back to hostname for backward compatibility
 	var existingRunner models.Runner
-	err := h.db.Where("hostname = ?", req.Hostname).First(&existingRunner).Error
+	var err error
+	
+	if req.DeviceID != "" {
+		err = h.db.Unscoped().Where("device_id = ?", req.DeviceID).First(&existingRunner).Error
+	} else {
+		// Fallback to hostname for backward compatibility
+		err = h.db.Unscoped().Where("hostname = ?", req.Hostname).First(&existingRunner).Error
+	}
 
 	if err == nil {
 		// Runner exists - update it instead of creating a new one
 		existingRunner.Name = req.Name
+		existingRunner.Hostname = req.Hostname // Update hostname in case it changed
 		existingRunner.OS = req.OS
 		existingRunner.Architecture = req.Architecture
 		existingRunner.MaxConcurrentTasks = req.MaxConcurrentTasks
@@ -420,6 +431,24 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 		existingRunner.ScreenMonitoringEnabled = req.ScreenMonitoringEnabled
 		existingRunner.LastHeartbeat = now
 		existingRunner.UpdatedAt = now
+		
+		// Update device_id if provided and not already set
+		if req.DeviceID != "" && existingRunner.DeviceID == "" {
+			existingRunner.DeviceID = req.DeviceID
+		}
+		
+		// If runner was soft-deleted, restore it by clearing DeletedAt
+		if existingRunner.DeletedAt.Valid {
+			existingRunner.DeletedAt = gorm.DeletedAt{}
+			// Use Unscoped() to update the deleted_at field
+			if err := h.db.Unscoped().Model(&existingRunner).Update("deleted_at", nil).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, RegisterRunnerResponse{
+					Success: false,
+					Message: err.Error(),
+				})
+				return
+			}
+		}
 
 		if err := h.db.Save(&existingRunner).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, RegisterRunnerResponse{
@@ -448,7 +477,12 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 
 	// Runner doesn't exist - create a new one
 	runnerID := uuid.New().String()
-	deviceID := uuid.New().String() // Unique device ID that persists through renames
+	
+	// Use provided device_id or generate a new one
+	deviceID := req.DeviceID
+	if deviceID == "" {
+		deviceID = uuid.New().String() // Fallback: generate UUID if not provided
+	}
 
 	runner := &models.Runner{
 		ID:                 runnerID,

@@ -16,6 +16,7 @@ import (
 
 	"borg/solder/internal/client"
 	"borg/solder/internal/config"
+	"borg/solder/internal/deviceid"
 	"borg/solder/internal/downloader"
 	"borg/solder/internal/executor"
 	"borg/solder/internal/heartbeat"
@@ -57,6 +58,13 @@ func main() {
 		runnerName = hostname
 	}
 
+	// Generate or get cached device ID
+	deviceID, err := deviceid.GetOrGenerateDeviceID(cfg.Work.Directory)
+	if err != nil {
+		log.Fatalf("Failed to generate device ID: %v", err)
+	}
+	log.Printf("Device ID: %s", deviceID)
+
 	// Create screen capture service to check availability
 	screenCapture := screencapture.NewCaptureService(cfg.ScreenCapture)
 	screenMonitoringEnabled := screenCapture.IsEnabled()
@@ -69,6 +77,7 @@ func main() {
 	registerReq := &client.RegisterRunnerRequest{
 		Name:                   runnerName,
 		Hostname:               getHostname(),
+		DeviceID:               deviceID,
 		OS:                     runtime.GOOS,
 		Architecture:           runtime.GOARCH,
 		MaxConcurrentTasks:     cfg.Tasks.MaxConcurrent,

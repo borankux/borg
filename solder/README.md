@@ -9,6 +9,7 @@ The worker agent for the distributed task execution system.
 - Downloads required files
 - Uploads execution artifacts
 - Sends heartbeats for health monitoring
+- Screen monitoring (Windows and Linux only - disabled on macOS due to API deprecation)
 
 ## Setup
 
@@ -16,6 +17,8 @@ The worker agent for the distributed task execution system.
 ```bash
 go mod download
 ```
+
+**Note for macOS users:** Screen capture is disabled on macOS due to API deprecation in macOS 15+. The `kbinani/screenshot` library uses deprecated APIs that are no longer available. Screen monitoring will be automatically disabled on macOS builds. If you encounter build errors related to the screenshot library, you can safely ignore them as the code uses build tags to exclude this functionality on macOS.
 
 2. Run the agent with command-line flags:
 ```bash
