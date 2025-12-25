@@ -32,7 +32,7 @@ func NewCaptureService(cfg config.ScreenCaptureConfig) *CaptureService {
 	
 	service := &CaptureService{
 		enabled:  enabled,
-		interval: time.Duration(cfg.IntervalSeconds) * time.Second,
+		interval: time.Duration(cfg.IntervalSeconds * float64(time.Second)),
 		quality:  cfg.Quality,
 		maxWidth: cfg.MaxWidth,
 		maxHeight: cfg.MaxHeight,

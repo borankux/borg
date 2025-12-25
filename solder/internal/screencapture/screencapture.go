@@ -34,7 +34,7 @@ type CaptureService struct {
 func NewCaptureService(cfg config.ScreenCaptureConfig) *CaptureService {
 	return &CaptureService{
 		enabled:  cfg.Enabled && isDesktopAvailable(),
-		interval: time.Duration(cfg.IntervalSeconds) * time.Second,
+		interval: time.Duration(cfg.IntervalSeconds * float64(time.Second)),
 		quality:  cfg.Quality,
 		maxWidth: cfg.MaxWidth,
 		maxHeight: cfg.MaxHeight,

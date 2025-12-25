@@ -40,11 +40,11 @@ type HeartbeatConfig struct {
 }
 
 type ScreenCaptureConfig struct {
-	Enabled         bool `mapstructure:"enabled"`
-	IntervalSeconds int  `mapstructure:"interval_seconds"`
-	Quality         int  `mapstructure:"quality"`
-	MaxWidth        int  `mapstructure:"max_width"`
-	MaxHeight       int  `mapstructure:"max_height"`
+	Enabled         bool    `mapstructure:"enabled"`
+	IntervalSeconds float64 `mapstructure:"interval_seconds"`
+	Quality         int     `mapstructure:"quality"`
+	MaxWidth        int     `mapstructure:"max_width"`
+	MaxHeight       int     `mapstructure:"max_height"`
 }
 
 var GlobalConfig *Config
@@ -71,7 +71,7 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("tasks.max_concurrent", 1)
 	viper.SetDefault("heartbeat.interval_seconds", 30)
 	viper.SetDefault("screen_capture.enabled", true)
-	viper.SetDefault("screen_capture.interval_seconds", 30)
+	viper.SetDefault("screen_capture.interval_seconds", 30.0)
 	viper.SetDefault("screen_capture.quality", 60)
 	viper.SetDefault("screen_capture.max_width", 1280)
 	viper.SetDefault("screen_capture.max_height", 720)
