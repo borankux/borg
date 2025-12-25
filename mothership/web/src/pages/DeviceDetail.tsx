@@ -50,22 +50,18 @@ export default function DeviceDetail() {
     return runner?.screen_monitoring_enabled === true
   }, [runner?.screen_monitoring_enabled])
 
-  const screenshotsQueryEnabled = useMemo(() => {
-    return !!id && isScreenMonitoringEnabled
-  }, [id, isScreenMonitoringEnabled])
-
-  const screenshotsRefetchInterval = useMemo(() => {
-    return isScreenMonitoringEnabled ? 5000 : false
-  }, [isScreenMonitoringEnabled])
-
+  // Always call useQuery unconditionally - use enabled to control execution
+  const screenshotsEnabled = !!id && !!runner && isScreenMonitoringEnabled
+  const screenshotsInterval = isScreenMonitoringEnabled ? 5000 : false as const
+  
   const { data: screenshotsData, isLoading: screenshotsLoading } = useQuery<{ screenshots: Screenshot[] }>({
     queryKey: ['screenshots', id],
     queryFn: async () => {
       const res = await axios.get(`/api/v1/runners/${id}/screenshots?limit=50`)
       return res.data
     },
-    enabled: screenshotsQueryEnabled,
-    refetchInterval: screenshotsRefetchInterval,
+    enabled: screenshotsEnabled,
+    refetchInterval: screenshotsInterval,
   })
 
   const screenshots = screenshotsData?.screenshots || []
