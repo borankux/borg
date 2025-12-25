@@ -209,21 +209,29 @@ export default function Runners() {
             <GlassCard key={runner.id} className="p-4">
               {/* Header Row: Status Badge | Name | Status + Actions */}
               <div className="flex items-center justify-between mb-4">
-                {/* Left: Status Badge */}
+                {/* Left: Status Badge + Screen Monitoring */}
                 <div className="flex items-center gap-2">
                   <div className={`w-2 h-2 rounded-full ${getStatusBadgeColor(runner.status)}`}></div>
                   <span className={`text-xs font-medium capitalize ${getStatusColor(runner.status)}`}>
                     {runner.status === 'offline' ? 'Offline' : runner.status}
                   </span>
                   {/* Screen Monitoring Indicator */}
-                  <div 
-                    className={`w-2 h-2 rounded-full ${
+                  <div className="flex items-center gap-1">
+                    <div 
+                      className={`w-2 h-2 rounded-full ${
+                        runner.screen_monitoring_enabled 
+                          ? 'bg-green-400' 
+                          : 'bg-gray-500'
+                      }`}
+                    ></div>
+                    <span className={`text-xs ${
                       runner.screen_monitoring_enabled 
-                        ? 'bg-green-400' 
-                        : 'bg-gray-500'
-                    }`}
-                    title={runner.screen_monitoring_enabled ? 'Screen monitoring enabled' : 'Screen monitoring disabled'}
-                  ></div>
+                        ? 'text-green-400' 
+                        : 'text-gray-500'
+                    }`}>
+                      {runner.screen_monitoring_enabled ? 'Monitor' : 'No Monitor'}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Center: Solder Name */}
