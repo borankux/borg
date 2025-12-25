@@ -48,13 +48,14 @@ export default function Runners() {
     runnerName: '',
   })
 
-  const { data: runners, isLoading } = useQuery<Runner[]>({
+  const { data: runners, isLoading, error } = useQuery<Runner[]>({
     queryKey: ['runners'],
     queryFn: async () => {
       const res = await axios.get('/api/v1/runners')
       return res.data
     },
     refetchInterval: 5000,
+    retry: 3,
   })
 
   const renameMutation = useMutation({
@@ -76,6 +77,23 @@ export default function Runners() {
       queryClient.invalidateQueries({ queryKey: ['runners'] })
     },
   })
+
+  // Close menu when clicking outside - MUST be called before any early returns
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (openMenuId) {
+        const menuElement = menuRefs.current[openMenuId]
+        if (menuElement && !menuElement.contains(event.target as Node)) {
+          setOpenMenuId(null)
+        }
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [openMenuId])
 
   const handleRename = (runnerId: string) => {
     if (newName.trim()) {
@@ -108,6 +126,15 @@ export default function Runners() {
     return (
       <div className="p-8">
         <div className="text-white">Loading...</div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="p-8">
+        <div className="text-red-400">Error loading runners: {error instanceof Error ? error.message : 'Unknown error'}</div>
+        <div className="text-gray-400 mt-2">Check browser console for details</div>
       </div>
     )
   }
@@ -176,23 +203,6 @@ export default function Runners() {
         return 'bg-gray-500'
     }
   }
-
-  // Close menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (openMenuId) {
-        const menuElement = menuRefs.current[openMenuId]
-        if (menuElement && !menuElement.contains(event.target as Node)) {
-          setOpenMenuId(null)
-        }
-      }
-    }
-
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-    }
-  }, [openMenuId])
 
   return (
     <div className="p-8">
