@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -22,24 +23,59 @@ import (
 )
 
 func main() {
-	// Configuration
-	serverAddr := os.Getenv("MOTHERSHIP_ADDR")
+	// Set custom usage function
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nEnvironment variables (used as fallback if flags not provided):\n")
+		fmt.Fprintf(os.Stderr, "  MOTHERSHIP_ADDR  - Mothership server address\n")
+		fmt.Fprintf(os.Stderr, "  RUNNER_NAME      - Runner name\n")
+		fmt.Fprintf(os.Stderr, "  RUNNER_TOKEN     - Runner authentication token\n")
+		fmt.Fprintf(os.Stderr, "  WORK_DIR         - Working directory for tasks\n")
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  %s --mothership https://192.168.1.100:8080 --name my-runner\n", os.Args[0])
+	}
+
+	// Command-line flags
+	var (
+		serverAddrFlag = flag.String("mothership", "", "Mothership server address (e.g., https://ip:port or http://ip:port)")
+		runnerNameFlag = flag.String("name", "", "Runner name")
+		runnerTokenFlag = flag.String("token", "", "Runner authentication token")
+		workDirFlag = flag.String("work-dir", "", "Working directory for tasks")
+	)
+	flag.Parse()
+
+	// Configuration with priority: flag > environment variable > default
+	serverAddr := *serverAddrFlag
+	if serverAddr == "" {
+		serverAddr = os.Getenv("MOTHERSHIP_ADDR")
+	}
 	if serverAddr == "" {
 		serverAddr = "http://localhost:8080"
 	}
 
-	runnerName := os.Getenv("RUNNER_NAME")
+	runnerName := *runnerNameFlag
+	if runnerName == "" {
+		runnerName = os.Getenv("RUNNER_NAME")
+	}
 	if runnerName == "" {
 		hostname, _ := os.Hostname()
 		runnerName = hostname
 	}
 
-	runnerToken := os.Getenv("RUNNER_TOKEN")
+	runnerToken := *runnerTokenFlag
+	if runnerToken == "" {
+		runnerToken = os.Getenv("RUNNER_TOKEN")
+	}
 	if runnerToken == "" {
 		runnerToken = "default-token" // In production, require token
 	}
 
-	workDir := os.Getenv("WORK_DIR")
+	workDir := *workDirFlag
+	if workDir == "" {
+		workDir = os.Getenv("WORK_DIR")
+	}
 	if workDir == "" {
 		workDir = "./work"
 	}

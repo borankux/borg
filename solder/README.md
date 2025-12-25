@@ -17,18 +17,34 @@ The worker agent for the distributed task execution system.
 go mod download
 ```
 
-2. Set environment variables:
-```
-MOTHERSHIP_ADDR=localhost:50051
-RUNNER_NAME=my-runner
-RUNNER_TOKEN=default-token
-WORK_DIR=./work
+2. Run the agent with command-line flags:
+```bash
+# Using command-line flags (recommended)
+./solder --mothership https://192.168.1.100:8080 --name my-runner --token my-token
+
+# Or using environment variables
+export MOTHERSHIP_ADDR=https://192.168.1.100:8080
+export RUNNER_NAME=my-runner
+export RUNNER_TOKEN=my-token
+./solder
 ```
 
-3. Run the agent:
-```bash
-go run cmd/agent/main.go
-```
+### Command-line Options
+
+- `--mothership <address>` - Mothership server address (e.g., `https://ip:port` or `http://ip:port`)
+- `--name <name>` - Runner name (defaults to hostname)
+- `--token <token>` - Runner authentication token
+- `--work-dir <path>` - Working directory for tasks (defaults to `./work`)
+- `-h, --help` - Show help message
+
+### Environment Variables (fallback if flags not provided)
+
+- `MOTHERSHIP_ADDR` - Mothership server address (default: `http://localhost:8080`)
+- `RUNNER_NAME` - Runner name (defaults to hostname)
+- `RUNNER_TOKEN` - Runner authentication token (default: `default-token`)
+- `WORK_DIR` - Working directory for tasks (default: `./work`)
+
+**Priority:** Command-line flags > Environment variables > Default values
 
 ## Task Types
 
