@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -373,7 +374,7 @@ type RegisterRunnerResponse struct {
 	Message  string `json:"message"`
 }
 
-// RegisterRunner registers a new runner
+// RegisterRunner registers a new runner or updates an existing one if the same hostname is found
 func (h *Handler) RegisterRunner(c *gin.Context) {
 	var req RegisterRunnerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -388,13 +389,63 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 		return
 	}
 
-	runnerID := uuid.New().String()
-	deviceID := uuid.New().String() // Unique device ID that persists through renames
 	now := time.Now()
-
 	labelsJSON, _ := json.Marshal(req.Labels)
 	gpuInfoJSON, _ := json.Marshal(req.GPUInfo)
 	publicIPsJSON, _ := json.Marshal(req.PublicIPs)
+
+	// Check if a runner with the same hostname already exists
+	var existingRunner models.Runner
+	err := h.db.Where("hostname = ?", req.Hostname).First(&existingRunner).Error
+	
+	if err == nil {
+		// Runner exists - update it instead of creating a new one
+		existingRunner.Name = req.Name
+		existingRunner.OS = req.OS
+		existingRunner.Architecture = req.Architecture
+		existingRunner.MaxConcurrentTasks = req.MaxConcurrentTasks
+		existingRunner.Status = "idle"
+		existingRunner.Labels = string(labelsJSON)
+		existingRunner.CPUCores = req.CPUCores
+		existingRunner.CPUModel = req.CPUModel
+		existingRunner.CPUFrequencyMHz = req.CPUFrequencyMHz
+		existingRunner.MemoryGB = req.MemoryGB
+		existingRunner.DiskSpaceGB = req.DiskSpaceGB
+		existingRunner.TotalDiskSpaceGB = req.TotalDiskSpaceGB
+		existingRunner.OSVersion = req.OSVersion
+		existingRunner.GPUInfo = string(gpuInfoJSON)
+		existingRunner.PublicIPs = string(publicIPsJSON)
+		existingRunner.LastHeartbeat = now
+		existingRunner.UpdatedAt = now
+
+		if err := h.db.Save(&existingRunner).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, RegisterRunnerResponse{
+				Success: false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, RegisterRunnerResponse{
+			RunnerID: existingRunner.ID,
+			Success:  true,
+			Message:  "runner re-registered successfully",
+		})
+		return
+	}
+	
+	// Check if error is "not found" (expected) or a real database error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusInternalServerError, RegisterRunnerResponse{
+			Success: false,
+			Message: err.Error(),
+		})
+		return
+	}
+
+	// Runner doesn't exist - create a new one
+	runnerID := uuid.New().String()
+	deviceID := uuid.New().String() // Unique device ID that persists through renames
 
 	runner := &models.Runner{
 		ID:                 runnerID,
