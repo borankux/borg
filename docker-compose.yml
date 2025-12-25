@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: borg
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mothership:
+    build:
+      context: ./mothership
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"  # HTTP/REST API
+    environment:
+      - DATABASE_URL=host=postgres user=postgres password=postgres dbname=borg port=5432 sslmode=disable
+      - STORAGE_PATH=/app/storage
+      - HTTP_PORT=8080
+    volumes:
+      - mothership_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  mothership_storage:
+

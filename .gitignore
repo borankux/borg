@@ -1,0 +1,42 @@
+# Executables
+*.exe
+*.exe~
+
+# Go build artifacts
+*.test
+*.out
+/bin/
+/dist/
+
+# Work directories
+work/
+**/work/
+
+# Node modules
+node_modules/
+**/node_modules/
+
+# Environment files
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker volumes data (optional - uncomment if you don't want to track volume data)
+# postgres_data/
+# mothership_storage/
+
