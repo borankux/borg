@@ -8,6 +8,18 @@
 /bin/
 /dist/
 
+# Project binaries (executable files)
+solder/agent
+mothership/mothership
+**/agent
+**/mothership
+
+# General executable files (no extension, common Go binary names)
+/cmd/*/agent
+/cmd/*/mothership
+/cmd/*/server
+/cmd/*/client
+
 # Work directories
 work/
 **/work/
