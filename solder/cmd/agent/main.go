@@ -52,7 +52,7 @@ func main() {
 	}
 
 	// Determine runner name
-	runnerName := cfg.Agent.Name
+	runnerName := cfg.Solder.Name
 	if runnerName == "" {
 		hostname, _ := os.Hostname()
 		runnerName = hostname
@@ -82,7 +82,7 @@ func main() {
 		Architecture:           runtime.GOARCH,
 		MaxConcurrentTasks:     cfg.Tasks.MaxConcurrent,
 		Labels:                 getLabels(),
-		Token:                  cfg.Agent.Token,
+		Token:                  cfg.Solder.Token,
 		ScreenMonitoringEnabled: screenMonitoringEnabled,
 	}
 

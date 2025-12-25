@@ -1,6 +1,6 @@
 # Borg Solder
 
-The worker agent for the distributed task execution system.
+The worker for the distributed task execution system.
 
 ## Features
 
@@ -20,9 +20,12 @@ go mod download
 
 **Note for macOS users:** Screen capture is disabled on macOS due to API deprecation in macOS 15+. The `kbinani/screenshot` library uses deprecated APIs that are no longer available. Screen monitoring will be automatically disabled on macOS builds. If you encounter build errors related to the screenshot library, you can safely ignore them as the code uses build tags to exclude this functionality on macOS.
 
-2. Run the agent with command-line flags:
+2. Run solder with command-line flags or config file:
 ```bash
-# Using command-line flags (recommended)
+# Using config file (recommended)
+./solder --config config.yaml
+
+# Or using command-line flags
 ./solder --mothership https://192.168.1.100:8080 --name my-runner --token my-token
 
 # Or using environment variables

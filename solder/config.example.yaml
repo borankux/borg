@@ -1,10 +1,10 @@
-# Solder Agent Configuration Example
+# Solder Configuration Example
 # Copy this file to config.yaml and modify as needed
 # Or set environment variables (they take priority)
 
-# Agent Configuration
-agent:
-  # Agent name (empty means use hostname)
+# Solder Configuration
+solder:
+  # Solder name (empty means use hostname)
   name: "my-runner"
   # Authentication token for connecting to mothership
   token: "your-secure-token-here"
@@ -56,8 +56,8 @@ screen_capture:
 
 # Environment Variable Overrides (optional)
 # These environment variables take priority over config file values:
-# SOLDER_AGENT_NAME - Override agent name
-# SOLDER_AGENT_TOKEN - Override authentication token
+# SOLDER_NAME - Override solder name
+# SOLDER_TOKEN - Override authentication token
 # SOLDER_SERVER_ADDRESS - Override server address
 # SOLDER_WORK_DIRECTORY - Override work directory
 # SOLDER_TASKS_MAX_CONCURRENT - Override max concurrent tasks
@@ -70,7 +70,7 @@ screen_capture:
 #
 # Legacy environment variables (also supported):
 # MOTHERSHIP_ADDR - Override server address
-# RUNNER_NAME - Override agent name
+# RUNNER_NAME - Override solder name
 # RUNNER_TOKEN - Override authentication token
 # WORK_DIR - Override work directory
 

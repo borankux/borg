@@ -10,15 +10,15 @@ import (
 )
 
 type Config struct {
-	Agent         AgentConfig         `mapstructure:"agent"`
-	Server        ServerConfig        `mapstructure:"server"`
-	Work          WorkConfig          `mapstructure:"work"`
-	Tasks         TasksConfig         `mapstructure:"tasks"`
-	Heartbeat     HeartbeatConfig     `mapstructure:"heartbeat"`
+	Solder       SolderConfig        `mapstructure:"solder"`
+	Server       ServerConfig        `mapstructure:"server"`
+	Work         WorkConfig          `mapstructure:"work"`
+	Tasks        TasksConfig         `mapstructure:"tasks"`
+	Heartbeat    HeartbeatConfig     `mapstructure:"heartbeat"`
 	ScreenCapture ScreenCaptureConfig `mapstructure:"screen_capture"`
 }
 
-type AgentConfig struct {
+type SolderConfig struct {
 	Name  string `mapstructure:"name"`
 	Token string `mapstructure:"token"`
 }
@@ -64,8 +64,8 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Set defaults
-	viper.SetDefault("agent.name", "")
-	viper.SetDefault("agent.token", "default-token")
+	viper.SetDefault("solder.name", "")
+	viper.SetDefault("solder.token", "default-token")
 	viper.SetDefault("server.address", "http://localhost:8080")
 	viper.SetDefault("work.directory", "./work")
 	viper.SetDefault("tasks.max_concurrent", 1)
@@ -86,10 +86,10 @@ func Load(configPath string) (*Config, error) {
 		viper.Set("server.address", addr)
 	}
 	if name := os.Getenv("RUNNER_NAME"); name != "" {
-		viper.Set("agent.name", name)
+		viper.Set("solder.name", name)
 	}
 	if token := os.Getenv("RUNNER_TOKEN"); token != "" {
-		viper.Set("agent.token", token)
+		viper.Set("solder.token", token)
 	}
 	if workDir := os.Getenv("WORK_DIR"); workDir != "" {
 		viper.Set("work.directory", workDir)
