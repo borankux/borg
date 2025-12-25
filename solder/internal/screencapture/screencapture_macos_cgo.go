@@ -73,8 +73,8 @@ func newMacOSCaptureSession(quality, maxWidth, maxHeight int) *macosCaptureSessi
 
 	s := &macosCaptureSession{
 		session:      session,
-		frameChan:    make(chan []byte, 5),    // Processed frames (smaller buffer)
-		rawFrameChan: make(chan rawFrame, 3),  // Raw frames (small buffer, drops old frames)
+		frameChan:    make(chan []byte, 10),   // Processed frames (larger buffer for bursts)
+		rawFrameChan: make(chan rawFrame, 5),  // Raw frames (larger buffer, drops old frames)
 		stopChan:     make(chan struct{}),
 		quality:      quality,
 		maxWidth:     maxWidth,
@@ -229,6 +229,11 @@ func (s *macosCaptureSession) getFrame(ctx context.Context) ([]byte, error) {
 	case <-s.stopChan:
 		return nil, fmt.Errorf("capture stopped")
 	}
+}
+
+// GetFrameChannel returns the frame channel for event-driven processing
+func (s *macosCaptureSession) GetFrameChannel() <-chan []byte {
+	return s.frameChan
 }
 
 // convertBGRAtoRGBAFast converts BGRA pixel data to RGBA image (optimized)

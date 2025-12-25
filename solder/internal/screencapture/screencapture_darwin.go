@@ -164,10 +164,12 @@ func (s *CaptureService) StartStreaming(ctx context.Context, captureFunc func([]
 	s.stopChan = make(chan struct{})
 	s.mu.Unlock()
 	
-	// Start frame processing goroutine
+	// Start frame processing goroutine - process frames as they arrive (event-driven, no ticker)
 	go func() {
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
+		// Rate limiter: ensure we don't send frames faster than interval
+		var lastSendTime time.Time
+		minInterval := s.interval
+		frameChan := s.session.GetFrameChannel()
 		
 		for {
 			select {
@@ -176,23 +178,23 @@ func (s *CaptureService) StartStreaming(ctx context.Context, captureFunc func([]
 				return
 			case <-s.stopChan:
 				return
-			case <-ticker.C:
-				// Get frame from session
-				frame, err := s.session.getFrame(ctx)
-				if err != nil {
-					if err != context.Canceled && err != context.DeadlineExceeded {
-						log.Printf("Failed to get frame: %v", err)
+			case frame := <-frameChan:
+				// Rate limiting: ensure minimum interval between sends
+				now := time.Now()
+				if !lastSendTime.IsZero() && now.Sub(lastSendTime) < minInterval {
+					// Skip frame if sending too fast (drop frame)
+					continue
+				}
+				
+				// Send frame asynchronously to avoid blocking
+				go func(f []byte) {
+					if err := captureFunc(f); err != nil {
+						log.Printf("Failed to send frame: %v", err)
 					}
-					continue
-				}
+				}(frame)
 				
-				// Call capture function
-				if err := captureFunc(frame); err != nil {
-					log.Printf("Failed to process frame: %v", err)
-					continue
-				}
-				
-				s.lastCapture = time.Now()
+				lastSendTime = now
+				s.lastCapture = now
 			}
 		}
 	}()

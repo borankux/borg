@@ -193,8 +193,14 @@ The agent will continue running without screen monitoring.
 						
 						streamingCtx, streamingCancel = context.WithCancel(ctx)
 						go screenCapture.StartStreaming(streamingCtx, func(data []byte) error {
-							// Use WebSocket if available, fallback to HTTP
-							return httpClient.SendScreenFrameBinary(ctx, data)
+							// Send frame asynchronously to avoid blocking
+							go func(frameData []byte) {
+								if err := httpClient.SendScreenFrameBinary(ctx, frameData); err != nil {
+									// Log error but don't block
+									log.Printf("Failed to send frame: %v", err)
+								}
+							}(data)
+							return nil // Return immediately, don't wait
 						})
 					} else if !shouldStream && isStreaming {
 						// Stop streaming
