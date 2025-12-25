@@ -5,7 +5,7 @@ package screencapture
 
 /*
 #cgo darwin CFLAGS: -x objective-c -mmacosx-version-min=12.3
-#cgo darwin LDFLAGS: -framework ScreenCaptureKit -framework AVFoundation -framework CoreVideo -framework Foundation -framework CoreGraphics
+#cgo darwin LDFLAGS: -framework ScreenCaptureKit -framework AVFoundation -framework CoreVideo -framework CoreMedia -framework Foundation -framework CoreGraphics
 #include "screencapture_macos.h"
 #include <stdlib.h>
 */
@@ -18,7 +18,6 @@ import (
 	"image/jpeg"
 	"runtime"
 	"sync"
-	"time"
 	"unsafe"
 
 	"golang.org/x/image/draw"

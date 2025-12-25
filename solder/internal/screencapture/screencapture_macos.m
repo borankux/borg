@@ -37,6 +37,34 @@ typedef void (*FrameCallback)(void* buffer, size_t size, uint32_t width, uint32_
     return self;
 }
 
+// Helper function to get SCDisplay from CGDirectDisplayID
++ (SCDisplay*)displayForDisplayID:(CGDirectDisplayID)displayID {
+    if (@available(macOS 12.3, *)) {
+        __block SCDisplay* result = nil;
+        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+        
+        [SCShareableContent getShareableContentExcludingDesktopWindows:YES
+                                                    onScreenWindowsOnly:YES
+                                                     completionHandler:^(SCShareableContent* content, NSError* error) {
+            if (content && !error) {
+                for (SCDisplay* display in content.displays) {
+                    if (display.displayID == displayID) {
+                        result = display;
+                        break;
+                    }
+                }
+            } else if (error) {
+                NSLog(@"Failed to get shareable content: %@", error);
+            }
+            dispatch_semaphore_signal(semaphore);
+        }];
+        
+        dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+        return result;
+    }
+    return nil;
+}
+
 - (BOOL)startCaptureWithDisplayID:(CGDirectDisplayID)displayID
                           maxWidth:(int)maxWidth
                          maxHeight:(int)maxHeight {
@@ -49,8 +77,15 @@ typedef void (*FrameCallback)(void* buffer, size_t size, uint32_t width, uint32_
     self.maxHeight = maxHeight;
     
     // Create content filter for display
-    SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplayID:displayID
-                                                         excludingWindows:nil];
+    // Get SCDisplay object from CGDirectDisplayID
+    SCDisplay* display = [[self class] displayForDisplayID:displayID];
+    if (!display) {
+        NSLog(@"Failed to get SCDisplay for displayID: %u", displayID);
+        return NO;
+    }
+    
+    SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplay:display
+                                                      excludingWindows:@[]];
     if (!filter) {
         return NO;
     }
@@ -88,7 +123,9 @@ typedef void (*FrameCallback)(void* buffer, size_t size, uint32_t width, uint32_
     }
     
     // Start capture
-    success = [stream startCaptureWithCompletionHandler:^(NSError* _Nullable error) {
+    // Note: startCaptureWithCompletionHandler returns void, not BOOL
+    // Success/failure is handled in the completion handler
+    [stream startCaptureWithCompletionHandler:^(NSError* _Nullable error) {
         if (error) {
             NSLog(@"Failed to start capture: %@", error);
             self.isCapturing = NO;
@@ -97,7 +134,8 @@ typedef void (*FrameCallback)(void* buffer, size_t size, uint32_t width, uint32_
         }
     }];
     
-    return success;
+    // Return YES optimistically - actual success is handled asynchronously in completion handler
+    return YES;
 }
 
 - (void)stopCapture {
@@ -228,26 +266,39 @@ void SetFrameCallback(void* session, FrameCallback callback) {
 }
 
 int HasScreenRecordingPermission(void) {
+    // Simplified permission check that doesn't use blocking async APIs
+    // The actual permission will be validated when capture is attempted
+    // This avoids crashing CGO calls with blocking semaphores
     if (@available(macOS 12.3, *)) {
-        // Check if we can create a content filter (requires permission)
+        // Check if ScreenCaptureKit framework is available
+        // and if we can access display information (basic availability check)
         CGDirectDisplayID displayID = CGMainDisplayID();
-        SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplayID:displayID
-                                                             excludingWindows:nil];
-        return filter != nil ? 1 : 0;
+        if (displayID == 0) {
+            return 0; // No displays available
+        }
+        // Check if we can get display dimensions (lightweight synchronous check)
+        uint32_t width = CGDisplayPixelsWide(displayID);
+        uint32_t height = CGDisplayPixelsHigh(displayID);
+        if (width == 0 || height == 0) {
+            return 0; // Display info not accessible
+        }
+        // Framework is available and displays are accessible
+        // Note: Actual ScreenCaptureKit permission validation happens during capture attempt
+        // This avoids blocking CGO calls with semaphores from SCShareableContent API
+        return 1;
     }
-    return 0;
+    return 0; // macOS version too old
 }
 
 void RequestScreenRecordingPermission(void) {
     // On macOS, permission is requested automatically when trying to capture
-    // We can't programmatically request it, but we can try to create a filter
-    // which will trigger the system permission dialog
+    // We can't programmatically request it from CGO context
+    // The permission dialog will appear automatically when capture is first attempted
+    // This function is a no-op to avoid blocking CGO calls
+    // Actual permission request happens during capture attempt in startCaptureWithDisplayID:
     if (@available(macOS 12.3, *)) {
-        CGDirectDisplayID displayID = CGMainDisplayID();
-        SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplayID:displayID
-                                                             excludingWindows:nil];
-        // The act of creating the filter may trigger permission request
-        (void)filter;
+        // Permission request will happen automatically when capture is attempted
+        // No action needed here to avoid blocking CGO calls
     }
 }
 
