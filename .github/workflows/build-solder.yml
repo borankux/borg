@@ -1,0 +1,161 @@
+name: Build Solder Binaries
+
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'solder/**'
+      - '.github/workflows/build-solder.yml'
+  pull_request:
+    branches: [ master, main ]
+    paths:
+      - 'solder/**'
+      - '.github/workflows/build-solder.yml'
+  workflow_dispatch:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # Windows builds
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            output: solder-windows-amd64.exe
+            cgo_enabled: "1"
+            
+          # Linux builds for Ubuntu/Debian (modern glibc, dynamic linking)
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            output: solder-linux-amd64-ubuntu-debian
+            cgo_enabled: "1"
+            
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            output: solder-linux-arm64-ubuntu-debian
+            cgo_enabled: "1"
+            
+          # Linux builds for CentOS/RHEL (static linking for compatibility)
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            output: solder-linux-amd64-centos-rhel
+            cgo_enabled: "0"
+            static: "true"
+            
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            output: solder-linux-arm64-centos-rhel
+            cgo_enabled: "0"
+            static: "true"
+
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install dependencies (Linux static builds)
+        if: matrix.static == 'true' && matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu || true
+          sudo apt-get install -y gcc-x86-64-linux-gnu || true
+
+      - name: Build binary
+        working-directory: ./solder
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo_enabled }}
+        run: |
+          echo "Building ${{ matrix.output }}"
+          echo "OS: ${{ matrix.goos }}, Arch: ${{ matrix.goarch }}, CGO: ${{ matrix.cgo_enabled }}, Static: ${{ matrix.static || 'false' }}"
+          
+          if [ "${{ matrix.static }}" = "true" ]; then
+            # Static linking for CentOS/RHEL compatibility
+            go build -ldflags '-linkmode external -extldflags "-static"' -o ../${{ matrix.output }} ./cmd/agent
+          else
+            # Dynamic linking for Ubuntu/Debian and Windows
+            go build -o ../${{ matrix.output }} ./cmd/agent
+          fi
+          
+          # For Linux, make it executable
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            chmod +x ../${{ matrix.output }}
+          fi
+          
+          # Show file info
+          ls -lh ../${{ matrix.output }}
+          file ../${{ matrix.output }} || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+          retention-days: 90
+
+  create-release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          cd artifacts
+          for dir in */; do
+            if [ -d "$dir" ]; then
+              cp "$dir"/* ../release/ 2>/dev/null || true
+            fi
+          done
+          cd ../release
+          
+          # Create distribution-specific archives
+          tar -czf solder-ubuntu-debian-amd64.tar.gz solder-linux-amd64-ubuntu-debian
+          tar -czf solder-ubuntu-debian-arm64.tar.gz solder-linux-arm64-ubuntu-debian
+          tar -czf solder-centos-rhel-amd64.tar.gz solder-linux-amd64-centos-rhel
+          tar -czf solder-centos-rhel-arm64.tar.gz solder-linux-arm64-centos-rhel
+          zip solder-windows-amd64.zip solder-windows-amd64.exe
+          
+          # Create combined archive
+          tar -czf solder-all-binaries.tar.gz *
+          zip -r solder-all-binaries.zip *
+          
+          echo "Release files:"
+          ls -lh
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            release/solder-all-binaries.tar.gz
+            release/solder-all-binaries.zip
+            release/solder-ubuntu-debian-amd64.tar.gz
+            release/solder-ubuntu-debian-arm64.tar.gz
+            release/solder-centos-rhel-amd64.tar.gz
+            release/solder-centos-rhel-arm64.tar.gz
+            release/solder-windows-amd64.zip
+            release/solder-*.exe
+            release/solder-linux-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
