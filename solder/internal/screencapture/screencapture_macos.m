@@ -1,3 +1,6 @@
+//go:build darwin
+// +build darwin
+
 #import <Foundation/Foundation.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <AVFoundation/AVFoundation.h>
