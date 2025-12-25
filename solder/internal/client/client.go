@@ -30,6 +30,11 @@ func NewClient(baseURL, runnerID string) *Client {
 	}
 }
 
+// SetRunnerID sets the runner ID for the client
+func (c *Client) SetRunnerID(runnerID string) {
+	c.runnerID = runnerID
+}
+
 // Close closes the client (no-op for HTTP client, kept for compatibility)
 func (c *Client) Close() error {
 	return nil
@@ -425,6 +430,10 @@ func (c *Client) UploadScreenshot(ctx context.Context, screenshotData []byte) er
 
 // SendScreenFrame sends a screen frame to mothership for streaming
 func (c *Client) SendScreenFrame(ctx context.Context, frameData []byte) error {
+	if c.runnerID == "" {
+		return fmt.Errorf("runner ID not set, cannot send screen frame")
+	}
+	
 	// Encode frame as base64
 	frameBase64 := base64.StdEncoding.EncodeToString(frameData)
 
