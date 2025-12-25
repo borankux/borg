@@ -128,12 +128,57 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start screen capture service
+	// Screen streaming management
+	var streamingCtx context.Context
+	var streamingCancel context.CancelFunc
+	var streamingMu sync.Mutex
+
+	// Start screen streaming monitor (only if capture is enabled)
 	if screenCapture.IsEnabled() {
-		go screenCapture.Start(ctx, func(data []byte) error {
-			return httpClient.UploadScreenshot(ctx, data)
-		})
-		log.Println("Screen capture enabled")
+		go func() {
+			ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					streamingMu.Lock()
+					if streamingCancel != nil {
+						streamingCancel()
+						streamingCancel = nil
+					}
+					streamingMu.Unlock()
+					return
+				case <-ticker.C:
+					// Check if streaming is requested
+					shouldStream, viewerCount, err := httpClient.GetScreenStreamStatus(ctx)
+					if err != nil {
+						log.Printf("Failed to check screen stream status: %v", err)
+						continue
+					}
+
+					streamingMu.Lock()
+					isStreaming := streamingCancel != nil
+
+					if shouldStream && !isStreaming {
+						// Start streaming
+						log.Printf("Starting screen streaming (viewers: %d)", viewerCount)
+						streamingCtx, streamingCancel = context.WithCancel(ctx)
+						go screenCapture.StartStreaming(streamingCtx, func(data []byte) error {
+							return httpClient.SendScreenFrame(ctx, data)
+						})
+					} else if !shouldStream && isStreaming {
+						// Stop streaming
+						log.Println("Stopping screen streaming (no viewers)")
+						streamingCancel()
+						streamingCancel = nil
+						screenCapture.StopStreaming()
+					}
+					streamingMu.Unlock()
+				}
+			}
+		}()
+		log.Println("Screen streaming monitor enabled")
 	} else {
 		log.Println("Screen capture not available (disabled or no desktop environment)")
 	}

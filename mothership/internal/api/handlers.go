@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"borg/mothership/internal/models"
 	"borg/mothership/internal/queue"
 	"borg/mothership/internal/storage"
+	"borg/mothership/internal/websocket"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -21,17 +23,19 @@ import (
 
 // Handler contains API handlers
 type Handler struct {
-	db      *gorm.DB
-	queue   *queue.Queue
-	storage *storage.Storage
+	db        *gorm.DB
+	queue     *queue.Queue
+	storage   *storage.Storage
+	screenHub *websocket.ScreenHub
 }
 
 // NewHandler creates a new API handler
-func NewHandler(db *gorm.DB, q *queue.Queue, s *storage.Storage) *Handler {
+func NewHandler(db *gorm.DB, q *queue.Queue, s *storage.Storage, screenHub *websocket.ScreenHub) *Handler {
 	return &Handler{
-		db:      db,
-		queue:   q,
-		storage: s,
+		db:        db,
+		queue:     q,
+		storage:   s,
+		screenHub: screenHub,
 	}
 }
 
@@ -882,6 +886,66 @@ func (h *Handler) GetScreenshot(c *gin.Context) {
 	}
 
 	c.File(screenshotPath)
+}
+
+// UploadScreenFrameRequest represents a screen frame upload request
+type UploadScreenFrameRequest struct {
+	Frame     string `json:"frame" binding:"required"` // base64 encoded JPEG
+	Timestamp int64  `json:"timestamp"`
+}
+
+// UploadScreenFrame handles screen frame upload from agent
+func (h *Handler) UploadScreenFrame(c *gin.Context) {
+	runnerID := c.Param("id")
+
+	var runner models.Runner
+	if err := h.db.First(&runner, "id = ?", runnerID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
+		return
+	}
+
+	var req UploadScreenFrameRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validate base64 frame (decode to check validity)
+	_, err := base64.StdEncoding.DecodeString(req.Frame)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid base64 frame data"})
+		return
+	}
+
+	// Convert to base64 data URL format for frontend
+	frameDataURL := "data:image/jpeg;base64," + req.Frame
+
+	// Broadcast frame to all viewers
+	h.screenHub.BroadcastFrame(runnerID, []byte(frameDataURL))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "frame received",
+	})
+}
+
+// GetScreenStreamStatus returns the streaming status for a runner
+func (h *Handler) GetScreenStreamStatus(c *gin.Context) {
+	runnerID := c.Param("id")
+
+	var runner models.Runner
+	if err := h.db.First(&runner, "id = ?", runnerID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
+		return
+	}
+
+	isStreaming := h.screenHub.IsStreaming(runnerID)
+	viewerCount := h.screenHub.ViewerCount(runnerID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"streaming":    isStreaming,
+		"viewer_count": viewerCount,
+	})
 }
 
 // DownloadSolder serves the solder executable for download

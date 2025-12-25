@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -383,7 +384,7 @@ func (c *Client) pollForJob(ctx context.Context) *Job {
 	return job
 }
 
-// UploadScreenshot uploads a screenshot to mothership
+// UploadScreenshot uploads a screenshot to mothership (deprecated - use SendScreenFrame instead)
 func (c *Client) UploadScreenshot(ctx context.Context, screenshotData []byte) error {
 	var requestBody bytes.Buffer
 	writer := multipart.NewWriter(&requestBody)
@@ -420,4 +421,70 @@ func (c *Client) UploadScreenshot(ctx context.Context, screenshotData []byte) er
 	}
 
 	return nil
+}
+
+// SendScreenFrame sends a screen frame to mothership for streaming
+func (c *Client) SendScreenFrame(ctx context.Context, frameData []byte) error {
+	// Encode frame as base64
+	frameBase64 := base64.StdEncoding.EncodeToString(frameData)
+
+	req := map[string]interface{}{
+		"frame":     frameBase64,
+		"timestamp": time.Now().Unix(),
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/api/v1/runners/"+c.runnerID+"/screen/frame", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("frame upload failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return nil
+}
+
+// GetScreenStreamStatus checks if screen streaming is requested
+func (c *Client) GetScreenStreamStatus(ctx context.Context) (bool, int, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, "GET",
+		c.baseURL+"/api/v1/runners/"+c.runnerID+"/screen/status", nil)
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, 0, fmt.Errorf("request failed with status %d", resp.StatusCode)
+	}
+
+	var statusResp struct {
+		Streaming   bool `json:"streaming"`
+		ViewerCount int  `json:"viewer_count"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+		return false, 0, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return statusResp.Streaming, statusResp.ViewerCount, nil
 }

@@ -6,6 +6,7 @@ package screencapture
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"borg/solder/internal/config"
@@ -18,6 +19,9 @@ type CaptureService struct {
 	maxWidth    int
 	maxHeight   int
 	lastCapture time.Time
+	stopChan    chan struct{}
+	running     bool
+	mu          sync.Mutex
 }
 
 func NewCaptureService(cfg config.ScreenCaptureConfig) *CaptureService {
@@ -27,6 +31,8 @@ func NewCaptureService(cfg config.ScreenCaptureConfig) *CaptureService {
 		quality:  cfg.Quality,
 		maxWidth: cfg.MaxWidth,
 		maxHeight: cfg.MaxHeight,
+		stopChan: make(chan struct{}),
+		running:  false,
 	}
 }
 
@@ -45,6 +51,18 @@ func (s *CaptureService) CaptureScreen() ([]byte, error) {
 func (s *CaptureService) Start(ctx context.Context, captureFunc func([]byte) error) {
 	// No-op on macOS - screen capture is disabled
 	return
+}
+
+func (s *CaptureService) StartStreaming(ctx context.Context, captureFunc func([]byte) error) error {
+	return fmt.Errorf("screen capture is not supported on macOS")
+}
+
+func (s *CaptureService) StopStreaming() {
+	// No-op on macOS
+}
+
+func (s *CaptureService) IsRunning() bool {
+	return false
 }
 
 func (s *CaptureService) IsEnabled() bool {

@@ -13,14 +13,15 @@ import (
 
 // Server wraps the REST API server
 type Server struct {
-	handler *Handler
-	router  *gin.Engine
-	hub     *websocket.Hub
+	handler   *Handler
+	router    *gin.Engine
+	hub       *websocket.Hub
+	screenHub *websocket.ScreenHub
 }
 
 // NewServer creates a new API server
-func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, storage *storage.Storage) *Server {
-	handler := NewHandler(db, q, storage)
+func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *websocket.ScreenHub, storage *storage.Storage) *Server {
+	handler := NewHandler(db, q, storage, screenHub)
 	
 	router := gin.Default()
 	
@@ -41,6 +42,9 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, storage *storage
 	
 	// WebSocket endpoint
 	router.GET("/ws", websocket.HandleWebSocket(hub))
+	
+	// Screen streaming WebSocket endpoint
+	router.GET("/ws/screen/:runnerID", websocket.HandleScreenWebSocket(screenHub))
 	
 	// Download endpoint (before API routes)
 	router.GET("/api/v1/download/solder.exe", handler.DownloadSolder)
@@ -76,7 +80,11 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, storage *storage
 		api.GET("/files/:id/download", handler.DownloadFile)
 		api.POST("/artifacts/upload", handler.UploadArtifact)
 		
-		// Screenshot endpoints
+		// Screen streaming endpoints
+		api.POST("/runners/:id/screen/frame", handler.UploadScreenFrame)
+		api.GET("/runners/:id/screen/status", handler.GetScreenStreamStatus)
+		
+		// Screenshot endpoints (deprecated - kept for backward compatibility)
 		api.POST("/runners/:id/screenshots", handler.UploadScreenshot)
 		api.GET("/runners/:id/screenshots", handler.GetScreenshots)
 		api.GET("/runners/:id/screenshots/:filename", handler.GetScreenshot)
@@ -86,15 +94,21 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, storage *storage
 	ServeStaticFiles(router)
 	
 	return &Server{
-		handler: handler,
-		router:  router,
-		hub:     hub,
+		handler:   handler,
+		router:    router,
+		hub:       hub,
+		screenHub: screenHub,
 	}
 }
 
 // GetHub returns the WebSocket hub
 func (s *Server) GetHub() *websocket.Hub {
 	return s.hub
+}
+
+// GetScreenHub returns the screen streaming hub
+func (s *Server) GetScreenHub() *websocket.ScreenHub {
+	return s.screenHub
 }
 
 // GetRouter returns the router (for WebSocket setup)

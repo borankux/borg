@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import axios from 'axios'
@@ -24,17 +24,19 @@ interface Runner {
   screen_monitoring_enabled?: boolean
 }
 
-interface Screenshot {
-  filename: string
+interface ScreenFrameMessage {
+  type: string
+  data: string // base64 data URL
   timestamp: number
-  size: number
 }
 
 export default function DeviceDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const [imageError, setImageError] = useState(false)
+  const [currentFrame, setCurrentFrame] = useState<string | null>(null)
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected')
+  const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const { data: runner, isLoading: runnerLoading } = useQuery<Runner>({
     queryKey: ['runner', id],
@@ -46,29 +48,72 @@ export default function DeviceDetail() {
     refetchInterval: 5000,
   })
 
-  // Always call useQuery unconditionally with stable config to avoid hook order issues
-  // Query is always enabled when id exists - we'll handle disabled state in UI
-  const { data: screenshotsData, isLoading: screenshotsLoading } = useQuery<{ screenshots: Screenshot[] }>({
-    queryKey: ['screenshots', id],
-    queryFn: async () => {
-      const res = await axios.get(`/api/v1/runners/${id}/screenshots?limit=50`)
-      return res.data
-    },
-    enabled: !!id, // Always enabled when id exists - stable value
-    refetchInterval: 5000, // Stable value - always the same
-  })
-
-  const screenshots = screenshotsData?.screenshots || []
-
+  // WebSocket connection for screen streaming
   useEffect(() => {
-    if (screenshots.length > 0 && currentIndex >= screenshots.length) {
-      setCurrentIndex(screenshots.length - 1)
+    if (!id || !runner?.screen_monitoring_enabled) {
+      return
     }
-  }, [screenshots.length, currentIndex])
 
-  useEffect(() => {
-    setImageError(false)
-  }, [currentIndex])
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${window.location.host}/ws/screen/${id}`
+    
+    const connect = () => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        return
+      }
+
+      setConnectionStatus('connecting')
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        setConnectionStatus('connected')
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current)
+          reconnectTimeoutRef.current = null
+        }
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const message: ScreenFrameMessage = JSON.parse(event.data)
+          if (message.type === 'frame' && message.data) {
+            setCurrentFrame(message.data)
+          }
+        } catch (err) {
+          console.error('Failed to parse WebSocket message:', err)
+        }
+      }
+
+      ws.onerror = () => {
+        setConnectionStatus('error')
+      }
+
+      ws.onclose = () => {
+        setConnectionStatus('disconnected')
+        wsRef.current = null
+        
+        // Attempt to reconnect after 3 seconds
+        if (runner?.screen_monitoring_enabled) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            connect()
+          }, 3000)
+        }
+      }
+    }
+
+    connect()
+
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+      }
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
+    }
+  }, [id, runner?.screen_monitoring_enabled])
 
   const parsePublicIPs = (ipsStr?: string | null): string[] => {
     if (!ipsStr || ipsStr === 'null' || ipsStr === 'undefined') return []
@@ -126,19 +171,29 @@ export default function DeviceDetail() {
     }
   }
 
-  const currentScreenshot = screenshots[currentIndex]
-
-  const handlePrev = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1)
-      setImageError(false)
+  const getConnectionStatusColor = () => {
+    switch (connectionStatus) {
+      case 'connected':
+        return 'text-green-400'
+      case 'connecting':
+        return 'text-yellow-400'
+      case 'error':
+        return 'text-red-400'
+      default:
+        return 'text-gray-400'
     }
   }
 
-  const handleNext = () => {
-    if (currentIndex < screenshots.length - 1) {
-      setCurrentIndex(currentIndex + 1)
-      setImageError(false)
+  const getConnectionStatusText = () => {
+    switch (connectionStatus) {
+      case 'connected':
+        return 'Streaming...'
+      case 'connecting':
+        return 'Connecting...'
+      case 'error':
+        return 'Connection Error'
+      default:
+        return 'Disconnected'
     }
   }
 
@@ -301,10 +356,24 @@ export default function DeviceDetail() {
           </GlassCard>
         </div>
 
-        {/* Screenshot Viewer */}
+        {/* Screen Stream Viewer */}
         <div className="lg:col-span-2">
           <GlassCard className="p-4">
-            <h2 className="text-lg font-semibold mb-4">Screen Monitoring</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Screen Monitoring</h2>
+              {runner.screen_monitoring_enabled && (
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${
+                    connectionStatus === 'connected' ? 'bg-green-400' : 
+                    connectionStatus === 'connecting' ? 'bg-yellow-400' : 
+                    'bg-gray-400'
+                  }`} />
+                  <span className={`text-sm ${getConnectionStatusColor()}`}>
+                    {getConnectionStatusText()}
+                  </span>
+                </div>
+              )}
+            </div>
             
             {!runner.screen_monitoring_enabled ? (
               <div className="flex items-center justify-center h-96 bg-gray-900 rounded-lg">
@@ -314,93 +383,40 @@ export default function DeviceDetail() {
                   <p className="text-sm mt-2">Configure the solder agent to enable screen monitoring</p>
                 </div>
               </div>
-            ) : screenshotsLoading ? (
-              <div className="flex items-center justify-center h-96">
-                <div className="text-white">Loading screenshots...</div>
-              </div>
-            ) : screenshots.length === 0 ? (
+            ) : connectionStatus === 'connecting' ? (
               <div className="flex items-center justify-center h-96 bg-gray-900 rounded-lg">
                 <div className="text-center text-gray-400">
-                  <p>No screenshots available yet</p>
-                  <p className="text-sm mt-2">Screenshots will appear here when captured</p>
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
+                  <p>Connecting to stream...</p>
+                </div>
+              </div>
+            ) : connectionStatus === 'error' ? (
+              <div className="flex items-center justify-center h-96 bg-gray-900 rounded-lg">
+                <div className="text-center text-gray-400">
+                  <p className="text-red-400 mb-2">Connection Error</p>
+                  <p className="text-sm">Attempting to reconnect...</p>
+                </div>
+              </div>
+            ) : currentFrame ? (
+              <div>
+                {/* Live Stream Display */}
+                <div className="relative bg-gray-900 rounded-lg mb-4 overflow-hidden" style={{ minHeight: '400px' }}>
+                  <img
+                    src={currentFrame}
+                    alt="Live screen stream"
+                    className="w-full h-auto"
+                    style={{ maxHeight: '600px', objectFit: 'contain' }}
+                  />
+                </div>
+                <div className="text-xs text-gray-400 text-center">
+                  Live stream - frames update automatically
                 </div>
               </div>
             ) : (
-              <div>
-                {/* Image Display */}
-                <div className="relative bg-gray-900 rounded-lg mb-4 overflow-hidden" style={{ minHeight: '400px' }}>
-                  {currentScreenshot && (
-                    <img
-                      src={`/api/v1/runners/${id}/screenshots/${currentScreenshot.filename}`}
-                      alt={`Screenshot ${currentIndex + 1}`}
-                      className={`w-full h-auto ${imageError ? 'hidden' : ''}`}
-                      onError={() => setImageError(true)}
-                      style={{ maxHeight: '600px', objectFit: 'contain' }}
-                    />
-                  )}
-                  {imageError && (
-                    <div className="flex items-center justify-center h-96 text-gray-400">
-                      <p>Failed to load image</p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Navigation Controls */}
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-4">
-                    <button
-                      onClick={handlePrev}
-                      disabled={currentIndex === 0}
-                      className={`px-4 py-2 rounded ${
-                        currentIndex === 0
-                          ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                          : 'bg-blue-600 text-white hover:bg-blue-700'
-                      }`}
-                    >
-                      Previous
-                    </button>
-                    <span className="text-gray-400">
-                      {currentIndex + 1} / {screenshots.length}
-                    </span>
-                    <button
-                      onClick={handleNext}
-                      disabled={currentIndex >= screenshots.length - 1}
-                      className={`px-4 py-2 rounded ${
-                        currentIndex >= screenshots.length - 1
-                          ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                          : 'bg-blue-600 text-white hover:bg-blue-700'
-                      }`}
-                    >
-                      Next
-                    </button>
-                  </div>
-                  {currentScreenshot && (
-                    <div className="text-xs text-gray-400">
-                      {new Date(currentScreenshot.timestamp * 1000).toLocaleString()}
-                    </div>
-                  )}
-                </div>
-
-                {/* Thumbnail Strip */}
-                <div className="flex gap-2 overflow-x-auto pb-2">
-                  {screenshots.slice(0, 20).map((screenshot, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => {
-                        setCurrentIndex(idx)
-                        setImageError(false)
-                      }}
-                      className={`flex-shrink-0 w-20 h-12 bg-gray-800 rounded border-2 ${
-                        idx === currentIndex ? 'border-blue-500' : 'border-gray-700'
-                      } overflow-hidden`}
-                    >
-                      <img
-                        src={`/api/v1/runners/${id}/screenshots/${screenshot.filename}`}
-                        alt={`Thumbnail ${idx + 1}`}
-                        className="w-full h-full object-cover"
-                      />
-                    </button>
-                  ))}
+              <div className="flex items-center justify-center h-96 bg-gray-900 rounded-lg">
+                <div className="text-center text-gray-400">
+                  <p>Waiting for stream...</p>
+                  <p className="text-sm mt-2">Frames will appear here when the agent starts streaming</p>
                 </div>
               </div>
             )}

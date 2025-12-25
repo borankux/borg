@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/kbinani/screenshot"
@@ -25,6 +26,9 @@ type CaptureService struct {
 	maxWidth    int
 	maxHeight   int
 	lastCapture time.Time
+	stopChan    chan struct{}
+	running     bool
+	mu          sync.Mutex
 }
 
 func NewCaptureService(cfg config.ScreenCaptureConfig) *CaptureService {
@@ -34,6 +38,8 @@ func NewCaptureService(cfg config.ScreenCaptureConfig) *CaptureService {
 		quality:  cfg.Quality,
 		maxWidth: cfg.MaxWidth,
 		maxHeight: cfg.MaxHeight,
+		stopChan: make(chan struct{}),
+		running:  false,
 	}
 }
 
@@ -114,6 +120,7 @@ func (s *CaptureService) resizeImage(img image.Image) image.Image {
 	return dst
 }
 
+// Start starts continuous capture (legacy method)
 func (s *CaptureService) Start(ctx context.Context, captureFunc func([]byte) error) {
 	if !s.enabled {
 		return
@@ -138,6 +145,67 @@ func (s *CaptureService) Start(ctx context.Context, captureFunc func([]byte) err
 			}
 		}
 	}
+}
+
+// StartStreaming starts on-demand capture streaming
+func (s *CaptureService) StartStreaming(ctx context.Context, captureFunc func([]byte) error) error {
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return fmt.Errorf("capture service is already running")
+	}
+	if !s.enabled {
+		s.mu.Unlock()
+		return fmt.Errorf("screen capture not enabled")
+	}
+	s.running = true
+	s.stopChan = make(chan struct{})
+	s.mu.Unlock()
+
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.mu.Lock()
+			s.running = false
+			s.mu.Unlock()
+			return nil
+		case <-s.stopChan:
+			s.mu.Lock()
+			s.running = false
+			s.mu.Unlock()
+			return nil
+		case <-ticker.C:
+			data, err := s.CaptureScreen()
+			if err != nil {
+				// Log error but continue
+				continue
+			}
+			if err := captureFunc(data); err != nil {
+				// Log error but continue
+				continue
+			}
+		}
+	}
+}
+
+// StopStreaming stops the capture streaming
+func (s *CaptureService) StopStreaming() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		close(s.stopChan)
+		s.running = false
+	}
+}
+
+// IsRunning returns whether capture is currently running
+func (s *CaptureService) IsRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
 }
 
 func (s *CaptureService) IsEnabled() bool {

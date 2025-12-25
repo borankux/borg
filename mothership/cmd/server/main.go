@@ -56,8 +56,15 @@ func main() {
 	hub := websocket.NewHub()
 	go hub.Run()
 	
+	// Initialize screen streaming hub
+	screenHub := websocket.NewScreenHub(func(runnerID string, shouldStream bool) {
+		// This callback will be used to notify agents to start/stop streaming
+		// For now, we'll handle this via HTTP endpoints that agents can poll
+		log.Printf("Screen streaming change for runner %s: %v", runnerID, shouldStream)
+	})
+	
 	// Initialize REST API server
-	apiServer := api.NewServer(db, q, hub, storageService)
+	apiServer := api.NewServer(db, q, hub, screenHub, storageService)
 	
 	// Start HTTP server
 	httpPort := os.Getenv("HTTP_PORT")
