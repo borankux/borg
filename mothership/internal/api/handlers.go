@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -29,15 +30,17 @@ type Handler struct {
 	queue     *queue.Queue
 	storage   *storage.Storage
 	screenHub *websocket.ScreenHub
+	agentHub  *websocket.AgentHub
 }
 
 // NewHandler creates a new API handler
-func NewHandler(db *gorm.DB, q *queue.Queue, s *storage.Storage, screenHub *websocket.ScreenHub) *Handler {
+func NewHandler(db *gorm.DB, q *queue.Queue, s *storage.Storage, screenHub *websocket.ScreenHub, agentHub *websocket.AgentHub) *Handler {
 	return &Handler{
 		db:        db,
 		queue:     q,
 		storage:   s,
 		screenHub: screenHub,
+		agentHub:  agentHub,
 	}
 }
 
@@ -202,6 +205,9 @@ func (h *Handler) CreateJob(c *gin.Context) {
 		return
 	}
 
+	// Notify all idle agents that a task is available
+	go h.notifyIdleAgentsOfTask()
+
 	c.JSON(http.StatusCreated, job)
 }
 
@@ -225,6 +231,9 @@ func (h *Handler) ResumeJob(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Notify all idle agents that a task is available
+	go h.notifyIdleAgentsOfTask()
 
 	c.JSON(http.StatusOK, gin.H{"message": "job resumed"})
 }
@@ -959,7 +968,7 @@ func (h *Handler) UploadScreenFrame(c *gin.Context) {
 	})
 }
 
-// GetScreenStreamStatus returns the streaming status for a runner
+// GetScreenStreamStatus returns the streaming status and settings for a runner
 func (h *Handler) GetScreenStreamStatus(c *gin.Context) {
 	runnerID := c.Param("id")
 
@@ -972,9 +981,62 @@ func (h *Handler) GetScreenStreamStatus(c *gin.Context) {
 	isStreaming := h.screenHub.IsStreaming(runnerID)
 	viewerCount := h.screenHub.ViewerCount(runnerID)
 
+	// Use defaults if not set
+	quality := runner.ScreenQuality
+	if quality == 0 {
+		quality = 60 // Default quality
+	}
+	fps := runner.ScreenFPS
+	if fps == 0 {
+		fps = 2.0 // Default FPS
+	}
+	screenIndex := runner.SelectedScreenIndex
+	if screenIndex < 0 {
+		screenIndex = 0 // Default to primary display
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"streaming":    isStreaming,
 		"viewer_count": viewerCount,
+		"quality":      quality,
+		"fps":          fps,
+		"screen_index": screenIndex,
+	})
+}
+
+// ScreenInfo represents information about an available screen/display
+type ScreenInfo struct {
+	Index     int32  `json:"index"`
+	Name      string `json:"name,omitempty"`
+	Width     int32  `json:"width"`
+	Height    int32  `json:"height"`
+	IsPrimary bool   `json:"is_primary"`
+}
+
+// GetAvailableScreens returns list of available screens for a runner
+func (h *Handler) GetAvailableScreens(c *gin.Context) {
+	runnerID := c.Param("id")
+
+	var runner models.Runner
+	if err := h.db.First(&runner, "id = ?", runnerID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
+		return
+	}
+
+	// For now, return a placeholder with at least one screen (primary)
+	// TODO: Get actual screen information from agent via heartbeat or separate endpoint
+	screens := []ScreenInfo{
+		{
+			Index:     0,
+			Name:      "Display 1",
+			Width:     1920, // Placeholder - will be updated when agent reports actual values
+			Height:    1080,
+			IsPrimary: true,
+		},
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"screens": screens,
 	})
 }
 
@@ -1080,6 +1142,48 @@ func (h *Handler) Login(c *gin.Context) {
 	})
 }
 
+// UpdateScreenSettingsRequest represents screen settings update request
+type UpdateScreenSettingsRequest struct {
+	Quality      int32   `json:"quality" binding:"required,min=1,max=100"` // JPEG quality 1-100
+	FPS          float64 `json:"fps" binding:"required,min=0.5,max=10"`    // Frames per second
+	ScreenIndex  *int32  `json:"screen_index,omitempty"`                    // Optional screen index (0 = primary)
+}
+
+// UpdateScreenSettings updates screen capture settings for a runner
+func (h *Handler) UpdateScreenSettings(c *gin.Context) {
+	runnerID := c.Param("id")
+
+	var req UpdateScreenSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var runner models.Runner
+	if err := h.db.First(&runner, "id = ?", runnerID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "runner not found"})
+		return
+	}
+
+	runner.ScreenQuality = req.Quality
+	runner.ScreenFPS = req.FPS
+	if req.ScreenIndex != nil {
+		runner.SelectedScreenIndex = *req.ScreenIndex
+	}
+	runner.UpdatedAt = time.Now()
+
+	if err := h.db.Save(&runner).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "screen settings updated successfully",
+		"runner":  runner,
+	})
+}
+
 // GetCurrentUser returns the current authenticated user
 func (h *Handler) GetCurrentUser(c *gin.Context) {
 	// Get user from context (set by auth middleware)
@@ -1104,4 +1208,186 @@ func (h *Handler) GetCurrentUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, userResponse)
+}
+
+// handleWebSocketHeartbeat handles heartbeat messages from agents via WebSocket
+func (h *Handler) handleWebSocketHeartbeat(runnerID string, data interface{}) {
+	// Convert data to HeartbeatRequest
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Failed to marshal heartbeat data from runner %s: %v", runnerID, err)
+		return
+	}
+
+	var req HeartbeatRequest
+	if err := json.Unmarshal(dataBytes, &req); err != nil {
+		log.Printf("Failed to unmarshal heartbeat request from runner %s: %v", runnerID, err)
+		return
+	}
+
+	now := time.Now()
+	updates := map[string]interface{}{
+		"last_heartbeat": now,
+		"status":         req.Status,
+		"active_tasks":   req.ActiveTasks,
+		"updated_at":     now,
+	}
+
+	// Update resource information if provided
+	if req.Resources != nil {
+		if req.Resources.DiskSpaceGB > 0 {
+			updates["disk_space_gb"] = req.Resources.DiskSpaceGB
+		}
+		if req.Resources.TotalDiskSpaceGB > 0 {
+			updates["total_disk_space_gb"] = req.Resources.TotalDiskSpaceGB
+		}
+		if req.Resources.MemoryGB > 0 {
+			updates["memory_gb"] = req.Resources.MemoryGB
+		}
+		if len(req.Resources.PublicIPs) > 0 {
+			publicIPsJSON, _ := json.Marshal(req.Resources.PublicIPs)
+			updates["public_ips"] = string(publicIPsJSON)
+		}
+	}
+
+	if err := h.db.Model(&models.Runner{}).Where("id = ?", runnerID).Updates(updates).Error; err != nil {
+		log.Printf("Failed to update heartbeat for runner %s: %v", runnerID, err)
+		return
+	}
+
+	// Send response via WebSocket if connected
+	h.agentHub.SendMessage(runnerID, "heartbeat_response", HeartbeatResponse{
+		Success:               true,
+		NextHeartbeatInterval: 30,
+	})
+}
+
+// handleWebSocketTaskStatus handles task status updates from agents via WebSocket
+func (h *Handler) handleWebSocketTaskStatus(runnerID string, data interface{}) {
+	// Convert data to UpdateTaskStatusRequest
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Failed to marshal task status data from runner %s: %v", runnerID, err)
+		return
+	}
+
+	var req UpdateTaskStatusRequest
+	if err := json.Unmarshal(dataBytes, &req); err != nil {
+		log.Printf("Failed to unmarshal task status request from runner %s: %v", runnerID, err)
+		return
+	}
+
+	// Extract task ID from the request (it should be in the data)
+	var taskStatusData map[string]interface{}
+	if err := json.Unmarshal(dataBytes, &taskStatusData); err == nil {
+		if taskID, ok := taskStatusData["task_id"].(string); ok {
+			exitCode := req.ExitCode
+			if exitCode != nil && *exitCode == -1 {
+				exitCode = nil
+			}
+
+			err := h.queue.UpdateTaskStatus(taskID, req.Status, exitCode, req.ErrorMessage)
+			if err != nil {
+				log.Printf("Failed to update task status for task %s: %v", taskID, err)
+				return
+			}
+
+			// Store logs if provided
+			if len(req.Stdout) > 0 || len(req.Stderr) > 0 {
+				var taskLog models.TaskLog
+				taskLog.TaskID = taskID
+				taskLog.Timestamp = time.Unix(req.Timestamp, 0)
+				if taskLog.Timestamp.IsZero() {
+					taskLog.Timestamp = time.Now()
+				}
+
+				if len(req.Stdout) > 0 {
+					taskLog.Level = "stdout"
+					taskLog.Message = string(req.Stdout)
+					h.db.Create(&taskLog)
+				}
+
+				if len(req.Stderr) > 0 {
+					taskLog.Level = "stderr"
+					taskLog.Message = string(req.Stderr)
+					h.db.Create(&taskLog)
+				}
+			}
+
+			// Send response via WebSocket
+			h.agentHub.SendMessage(runnerID, "task_status_response", UpdateTaskStatusResponse{
+				Success: true,
+				Message: "task status updated",
+			})
+		}
+	}
+}
+
+// notifyIdleAgentsOfTask notifies all idle agents that tasks are available
+func (h *Handler) notifyIdleAgentsOfTask() {
+	// Get all idle runners
+	var idleRunners []models.Runner
+	h.db.Where("status = ?", "idle").Find(&idleRunners)
+
+	for _, runner := range idleRunners {
+		if h.agentHub.IsAgentConnected(runner.ID) {
+			h.NotifyAgentOfTask(runner.ID)
+		}
+	}
+}
+
+// NotifyAgentOfTask notifies an agent via WebSocket that a task is available
+func (h *Handler) NotifyAgentOfTask(runnerID string) {
+	// Check if agent is connected via WebSocket
+	if !h.agentHub.IsAgentConnected(runnerID) {
+		return // Agent not connected, will use HTTP polling fallback
+	}
+
+	// Get next task for this runner
+	task, err := h.queue.GetNextTask(runnerID, nil)
+	if err != nil || task == nil {
+		return // No task available or error
+	}
+
+	// Load job
+	var job models.Job
+	if err := h.db.First(&job, "id = ?", task.JobID).Error; err != nil {
+		return
+	}
+
+	// Load job files
+	var jobFiles []models.JobFile
+	h.db.Where("job_id = ?", job.ID).Find(&jobFiles)
+
+	var args []string
+	json.Unmarshal([]byte(job.Args), &args)
+
+	var env map[string]string
+	json.Unmarshal([]byte(job.Env), &env)
+	if env == nil {
+		env = make(map[string]string)
+	}
+
+	requiredFiles := make([]string, 0, len(jobFiles))
+	for _, jf := range jobFiles {
+		requiredFiles = append(requiredFiles, jf.FileID)
+	}
+
+	taskResponse := GetNextTaskResponse{
+		TaskID:           task.ID,
+		JobID:            job.ID,
+		JobName:          job.Name,
+		Type:             job.Type,
+		Command:          job.Command,
+		Args:             args,
+		Env:              env,
+		WorkingDirectory: job.WorkingDirectory,
+		TimeoutSeconds:   job.TimeoutSeconds,
+		DockerImage:      job.DockerImage,
+		Privileged:       job.Privileged,
+		RequiredFiles:    requiredFiles,
+	}
+
+	// Send task via WebSocket
+	h.agentHub.SendTask(runnerID, taskResponse)
 }

@@ -21,11 +21,15 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	runnerID   string
-	
+
 	// WebSocket connection for screen streaming
-	screenWSConn *websocket.Conn
-	screenWSMu   sync.Mutex
+	screenWSConn   *websocket.Conn
+	screenWSMu     sync.Mutex
 	screenWSDialer *websocket.Dialer
+
+	// WebSocket connection for agent communication
+	agentWSClient *AgentWebSocketClient
+	agentWSMu     sync.Mutex
 }
 
 // NewClient creates a new HTTP client connection to mothership
@@ -47,8 +51,14 @@ func (c *Client) SetRunnerID(runnerID string) {
 	c.runnerID = runnerID
 }
 
-// Close closes the client (closes WebSocket connection if open)
+// Close closes the client (closes WebSocket connections if open)
 func (c *Client) Close() error {
+	c.agentWSMu.Lock()
+	if c.agentWSClient != nil {
+		c.agentWSClient.Disconnect()
+		c.agentWSClient = nil
+	}
+	c.agentWSMu.Unlock()
 	return c.CloseScreenWebSocket()
 }
 
@@ -63,23 +73,23 @@ type RegisterRunnerRequest struct {
 	Labels             map[string]string `json:"labels"`
 	Token              string            `json:"token"`
 	// Resource information
-	CPUCores         int32             `json:"cpu_cores"`
-	CPUModel         string            `json:"cpu_model"`
-	CPUFrequencyMHz  int32             `json:"cpu_frequency_mhz"`
-	MemoryGB         float64           `json:"memory_gb"`
-	DiskSpaceGB      float64           `json:"disk_space_gb"` // Free/available disk space
-	TotalDiskSpaceGB float64           `json:"total_disk_space_gb"` // Total disk space
-	OSVersion              string            `json:"os_version"`
-	GPUInfo                []GPUInfo         `json:"gpu_info"`
-	PublicIPs              []string          `json:"public_ips"`
-	ScreenMonitoringEnabled bool             `json:"screen_monitoring_enabled"`
+	CPUCores                int32     `json:"cpu_cores"`
+	CPUModel                string    `json:"cpu_model"`
+	CPUFrequencyMHz         int32     `json:"cpu_frequency_mhz"`
+	MemoryGB                float64   `json:"memory_gb"`
+	DiskSpaceGB             float64   `json:"disk_space_gb"`       // Free/available disk space
+	TotalDiskSpaceGB        float64   `json:"total_disk_space_gb"` // Total disk space
+	OSVersion               string    `json:"os_version"`
+	GPUInfo                 []GPUInfo `json:"gpu_info"`
+	PublicIPs               []string  `json:"public_ips"`
+	ScreenMonitoringEnabled bool      `json:"screen_monitoring_enabled"`
 }
 
 // GPUInfo represents GPU information
 type GPUInfo struct {
-	Name     string `json:"name"`
+	Name     string  `json:"name"`
 	MemoryGB float64 `json:"memory_gb"`
-	Driver   string `json:"driver,omitempty"`
+	Driver   string  `json:"driver,omitempty"`
 }
 
 // RegisterRunnerResponse represents runner registration response
@@ -222,7 +232,7 @@ func (c *Client) UpdateTaskStatusWithID(ctx context.Context, taskID string, req 
 
 // ResourceUpdate represents resource information update
 type ResourceUpdate struct {
-	DiskSpaceGB      float64  `json:"disk_space_gb,omitempty"`      // Free/available disk space
+	DiskSpaceGB      float64  `json:"disk_space_gb,omitempty"`       // Free/available disk space
 	TotalDiskSpaceGB float64  `json:"total_disk_space_gb,omitempty"` // Total disk space
 	MemoryGB         float64  `json:"memory_gb,omitempty"`
 	PublicIPs        []string `json:"public_ips,omitempty"`
@@ -230,15 +240,15 @@ type ResourceUpdate struct {
 
 // HeartbeatRequest represents heartbeat request
 type HeartbeatRequest struct {
-	Status      string         `json:"status"` // idle, busy, offline
-	ActiveTasks int32          `json:"active_tasks"`
+	Status      string          `json:"status"` // idle, busy, offline
+	ActiveTasks int32           `json:"active_tasks"`
 	Resources   *ResourceUpdate `json:"resources,omitempty"` // Optional resource update
 }
 
 // HeartbeatResponse represents heartbeat response
 type HeartbeatResponse struct {
-	Success             bool `json:"success"`
-	NextHeartbeatInterval int `json:"next_heartbeat_interval"` // seconds
+	Success               bool `json:"success"`
+	NextHeartbeatInterval int  `json:"next_heartbeat_interval"` // seconds
 }
 
 // Heartbeat sends heartbeat to mothership
@@ -445,7 +455,7 @@ func (c *Client) SendScreenFrame(ctx context.Context, frameData []byte) error {
 	if c.runnerID == "" {
 		return fmt.Errorf("runner ID not set, cannot send screen frame")
 	}
-	
+
 	// Encode frame as base64
 	frameBase64 := base64.StdEncoding.EncodeToString(frameData)
 
@@ -480,68 +490,81 @@ func (c *Client) SendScreenFrame(ctx context.Context, frameData []byte) error {
 	return nil
 }
 
-// GetScreenStreamStatus checks if screen streaming is requested
-func (c *Client) GetScreenStreamStatus(ctx context.Context) (bool, int, error) {
+// ScreenStreamStatus represents screen stream status and settings
+type ScreenStreamStatus struct {
+	Streaming   bool    `json:"streaming"`
+	ViewerCount int     `json:"viewer_count"`
+	Quality     int32   `json:"quality"`
+	FPS         float64 `json:"fps"`
+	ScreenIndex int32   `json:"screen_index"` // Index of selected screen (0 = primary)
+}
+
+// GetScreenStreamStatus checks if screen streaming is requested and returns settings
+func (c *Client) GetScreenStreamStatus(ctx context.Context) (*ScreenStreamStatus, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, "GET",
 		c.baseURL+"/api/v1/runners/"+c.runnerID+"/screen/status", nil)
 	if err != nil {
-		return false, 0, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return false, 0, fmt.Errorf("failed to send request: %w", err)
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return false, 0, fmt.Errorf("request failed with status %d", resp.StatusCode)
+		return nil, fmt.Errorf("request failed with status %d", resp.StatusCode)
 	}
 
-	var statusResp struct {
-		Streaming   bool `json:"streaming"`
-		ViewerCount int  `json:"viewer_count"`
-	}
-
+	var statusResp ScreenStreamStatus
 	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
-		return false, 0, fmt.Errorf("failed to decode response: %w", err)
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return statusResp.Streaming, statusResp.ViewerCount, nil
+	// Set defaults if not provided
+	if statusResp.Quality == 0 {
+		statusResp.Quality = 60
+	}
+	if statusResp.FPS == 0 {
+		statusResp.FPS = 2.0
+	}
+
+	return &statusResp, nil
 }
 
 // ConnectScreenWebSocket connects to the screen streaming WebSocket endpoint
 func (c *Client) ConnectScreenWebSocket(ctx context.Context) error {
 	c.screenWSMu.Lock()
 	defer c.screenWSMu.Unlock()
-	
+
 	if c.screenWSConn != nil {
 		// Already connected
 		return nil
 	}
-	
+
 	if c.runnerID == "" {
 		return fmt.Errorf("runner ID not set, cannot connect WebSocket")
 	}
-	
+
 	// Convert HTTP URL to WebSocket URL
 	wsURL, err := url.Parse(c.baseURL)
 	if err != nil {
 		return fmt.Errorf("invalid base URL: %w", err)
 	}
-	
+
 	if wsURL.Scheme == "https" {
 		wsURL.Scheme = "wss"
 	} else {
 		wsURL.Scheme = "ws"
 	}
 	wsURL.Path = fmt.Sprintf("/ws/screen/agent/%s", c.runnerID)
-	
+
 	conn, _, err := c.screenWSDialer.DialContext(ctx, wsURL.String(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect WebSocket: %w", err)
 	}
-	
+
 	c.screenWSConn = conn
 	return nil
 }
@@ -551,15 +574,15 @@ func (c *Client) SendScreenFrameBinary(ctx context.Context, frameData []byte) er
 	c.screenWSMu.Lock()
 	conn := c.screenWSConn
 	c.screenWSMu.Unlock()
-	
+
 	if conn == nil {
 		// Fallback to HTTP if WebSocket not connected
 		return c.SendScreenFrame(ctx, frameData)
 	}
-	
+
 	// Set write deadline
 	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	
+
 	// Send binary frame
 	err := conn.WriteMessage(websocket.BinaryMessage, frameData)
 	if err != nil {
@@ -570,11 +593,11 @@ func (c *Client) SendScreenFrameBinary(ctx context.Context, frameData []byte) er
 			c.screenWSConn = nil
 		}
 		c.screenWSMu.Unlock()
-		
+
 		// Fallback to HTTP
 		return c.SendScreenFrame(ctx, frameData)
 	}
-	
+
 	return nil
 }
 
@@ -582,11 +605,126 @@ func (c *Client) SendScreenFrameBinary(ctx context.Context, frameData []byte) er
 func (c *Client) CloseScreenWebSocket() error {
 	c.screenWSMu.Lock()
 	defer c.screenWSMu.Unlock()
-	
+
 	if c.screenWSConn != nil {
 		err := c.screenWSConn.Close()
 		c.screenWSConn = nil
 		return err
 	}
 	return nil
+}
+
+// ConnectAgentWebSocket connects to the agent WebSocket endpoint
+func (c *Client) ConnectAgentWebSocket(ctx context.Context) error {
+	c.agentWSMu.Lock()
+	defer c.agentWSMu.Unlock()
+
+	if c.agentWSClient != nil && c.agentWSClient.IsConnected() {
+		return nil // Already connected
+	}
+
+	if c.runnerID == "" {
+		return fmt.Errorf("runner ID not set, cannot connect WebSocket")
+	}
+
+	c.agentWSClient = NewAgentWebSocketClient(c.baseURL, c.runnerID)
+	return c.agentWSClient.Connect(ctx)
+}
+
+// StreamJobsWebSocket streams jobs via WebSocket
+func (c *Client) StreamJobsWebSocket(ctx context.Context, jobChan chan<- *Job) error {
+	c.agentWSMu.Lock()
+	client := c.agentWSClient
+	c.agentWSMu.Unlock()
+
+	if client == nil || !client.IsConnected() {
+		return fmt.Errorf("WebSocket not connected")
+	}
+
+	messageChan := client.ReceiveMessages()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case message, ok := <-messageChan:
+			if !ok {
+				return fmt.Errorf("WebSocket message channel closed")
+			}
+
+			if message.Type == "task_assignment" {
+				var job Job
+				if err := json.Unmarshal(message.Data, &job); err != nil {
+					// Log error but continue - will be handled by HTTP fallback
+					continue
+				}
+
+				select {
+				case jobChan <- &job:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+	}
+}
+
+// SendHeartbeatWebSocket sends a heartbeat via WebSocket
+func (c *Client) SendHeartbeatWebSocket(ctx context.Context, status string, activeTasks int32, resources *ResourceUpdate) error {
+	c.agentWSMu.Lock()
+	client := c.agentWSClient
+	c.agentWSMu.Unlock()
+
+	if client == nil || !client.IsConnected() {
+		return fmt.Errorf("WebSocket not connected")
+	}
+
+	heartbeatData := map[string]interface{}{
+		"status":       status,
+		"active_tasks": activeTasks,
+	}
+
+	if resources != nil {
+		heartbeatData["resources"] = resources
+	}
+
+	return client.SendMessage("heartbeat", heartbeatData)
+}
+
+// SendTaskStatusWebSocket sends a task status update via WebSocket
+func (c *Client) SendTaskStatusWebSocket(ctx context.Context, taskID string, req *UpdateTaskStatusRequest) error {
+	c.agentWSMu.Lock()
+	client := c.agentWSClient
+	c.agentWSMu.Unlock()
+
+	if client == nil || !client.IsConnected() {
+		return fmt.Errorf("WebSocket not connected")
+	}
+
+	statusData := map[string]interface{}{
+		"task_id":   taskID,
+		"status":    req.Status,
+		"timestamp": req.Timestamp,
+	}
+
+	if req.ExitCode != nil {
+		statusData["exit_code"] = *req.ExitCode
+	}
+	if req.ErrorMessage != "" {
+		statusData["error_message"] = req.ErrorMessage
+	}
+	if len(req.Stdout) > 0 {
+		statusData["stdout"] = req.Stdout
+	}
+	if len(req.Stderr) > 0 {
+		statusData["stderr"] = req.Stderr
+	}
+
+	return client.SendMessage("task_status", statusData)
+}
+
+// IsAgentWebSocketConnected returns whether the agent WebSocket is connected
+func (c *Client) IsAgentWebSocketConnected() bool {
+	c.agentWSMu.Lock()
+	defer c.agentWSMu.Unlock()
+	return c.agentWSClient != nil && c.agentWSClient.IsConnected()
 }

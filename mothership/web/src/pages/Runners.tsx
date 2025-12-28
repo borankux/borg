@@ -33,6 +33,8 @@ interface Runner {
   gpu_info?: string
   public_ips?: string
   screen_monitoring_enabled?: boolean
+  screen_quality?: number
+  screen_fps?: number
 }
 
 export default function Runners() {

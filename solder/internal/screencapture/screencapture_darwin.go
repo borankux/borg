@@ -14,17 +14,18 @@ import (
 )
 
 type CaptureService struct {
-	enabled     bool
-	interval    time.Duration
-	quality     int
-	maxWidth    int
-	maxHeight   int
-	lastCapture time.Time
-	stopChan    chan struct{}
-	running     bool
-	mu          sync.Mutex
-	session     *macosCaptureSession
-	displayID   uint32
+	enabled            bool
+	interval           time.Duration
+	quality            int
+	maxWidth           int
+	maxHeight          int
+	lastCapture        time.Time
+	stopChan           chan struct{}
+	running            bool
+	mu                 sync.Mutex
+	session            *macosCaptureSession
+	displayID          uint32
+	selectedScreenIndex int
 }
 
 func NewCaptureService(cfg config.ScreenCaptureConfig) *CaptureService {
@@ -43,6 +44,7 @@ func NewCaptureService(cfg config.ScreenCaptureConfig) *CaptureService {
 	if enabled {
 		// Get primary display ID
 		service.displayID = getPrimaryDisplayID()
+		service.selectedScreenIndex = 0
 		
 		// Create capture session
 		service.session = newMacOSCaptureSession(cfg.Quality, cfg.MaxWidth, cfg.MaxHeight)
@@ -91,11 +93,25 @@ func (s *CaptureService) CaptureScreen() ([]byte, error) {
 	if s.session == nil {
 		return nil, fmt.Errorf("capture session not initialized")
 	}
-	
-	// Start capture if not already running
+
 	s.mu.Lock()
+	screenIndex := s.selectedScreenIndex
+	s.mu.Unlock()
+
+	// Get display IDs and validate index
+	displayIDs := getDisplayIDs()
+	if screenIndex < 0 || screenIndex >= len(displayIDs) {
+		screenIndex = 0 // Fallback to primary
+	}
+	displayID := displayIDs[screenIndex]
+
+	// Update displayID if screen index changed
+	s.mu.Lock()
+	if s.displayID != displayID {
+		s.displayID = displayID
+	}
 	wasRunning := s.running
-	if !s.running {
+	if !wasRunning {
 		if err := s.session.startCapture(s.displayID); err != nil {
 			s.mu.Unlock()
 			return nil, fmt.Errorf("failed to start capture: %w", err)
@@ -154,6 +170,15 @@ func (s *CaptureService) StartStreaming(ctx context.Context, captureFunc func([]
 		s.mu.Unlock()
 		return fmt.Errorf("capture already running")
 	}
+
+	// Ensure displayID matches selectedScreenIndex
+	screenIndex := s.selectedScreenIndex
+	displayIDs := getDisplayIDs()
+	if screenIndex < 0 || screenIndex >= len(displayIDs) {
+		screenIndex = 0
+	}
+	s.displayID = displayIDs[screenIndex]
+	s.selectedScreenIndex = screenIndex
 	
 	if err := s.session.startCapture(s.displayID); err != nil {
 		s.mu.Unlock()
@@ -231,5 +256,67 @@ func (s *CaptureService) IsRunning() bool {
 
 func (s *CaptureService) IsEnabled() bool {
 	return s.enabled
+}
+
+// GetAvailableScreens returns a list of available screens/displays (macOS)
+func (s *CaptureService) GetAvailableScreens() ([]ScreenInfo, error) {
+	if !s.enabled {
+		return nil, fmt.Errorf("screen capture not available on this system")
+	}
+
+	displayIDs := getDisplayIDs()
+	screens := make([]ScreenInfo, 0, len(displayIDs))
+
+	for i, displayID := range displayIDs {
+		// Get display dimensions using CGO wrapper functions
+		width := int(getDisplayWidth(displayID))
+		height := int(getDisplayHeight(displayID))
+		
+		screens = append(screens, ScreenInfo{
+			Index:     i,
+			Name:      fmt.Sprintf("Display %d", i+1),
+			Width:     width,
+			Height:    height,
+			IsPrimary: i == 0,
+		})
+	}
+
+	return screens, nil
+}
+
+// SetScreenIndex sets the screen index to capture (macOS)
+func (s *CaptureService) SetScreenIndex(index int) error {
+	if !s.enabled {
+		return fmt.Errorf("screen capture not available on this system")
+	}
+
+	displayIDs := getDisplayIDs()
+	if index < 0 || index >= len(displayIDs) {
+		return fmt.Errorf("invalid screen index %d, must be between 0 and %d", index, len(displayIDs)-1)
+	}
+
+	s.mu.Lock()
+	oldDisplayID := s.displayID
+	s.selectedScreenIndex = index
+	newDisplayID := displayIDs[index]
+	s.displayID = newDisplayID
+	wasRunning := s.running
+	s.mu.Unlock()
+
+	// If capture is running, restart with new display
+	if wasRunning && s.session != nil && oldDisplayID != newDisplayID {
+		s.session.stopCapture()
+		s.mu.Lock()
+		s.running = false
+		s.mu.Unlock()
+		if err := s.session.startCapture(newDisplayID); err != nil {
+			return fmt.Errorf("failed to switch to display %d: %w", index, err)
+		}
+		s.mu.Lock()
+		s.running = true
+		s.mu.Unlock()
+	}
+
+	return nil
 }
 

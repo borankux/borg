@@ -28,6 +28,9 @@ type Runner struct {
 	GPUInfo                string    `gorm:"type:text" json:"gpu_info"` // JSON array of GPU info
 	PublicIPs              string    `gorm:"type:text" json:"public_ips"` // JSON array of IP addresses
 	ScreenMonitoringEnabled bool     `gorm:"default:false" json:"screen_monitoring_enabled"`
+	ScreenQuality          int32     `gorm:"default:60" json:"screen_quality"` // JPEG quality 1-100
+	ScreenFPS              float64   `gorm:"default:2.0" json:"screen_fps"` // Frames per second (0.5-10)
+	SelectedScreenIndex    int32     `gorm:"default:0" json:"selected_screen_index"` // Index of selected display (0 = primary)
 	RegisteredAt           time.Time `gorm:"not null" json:"registered_at"`
 	LastHeartbeat    time.Time `gorm:"not null" json:"last_heartbeat"`
 	CreatedAt        time.Time `json:"created_at"`

@@ -68,7 +68,7 @@ func main() {
 	// Create screen capture service to check availability
 	screenCapture := screencapture.NewCaptureService(cfg.ScreenCapture)
 	screenMonitoringEnabled := screenCapture.IsEnabled()
-	
+
 	// Log permission status on macOS
 	if runtime.GOOS == "darwin" {
 		if screenMonitoringEnabled {
@@ -94,15 +94,17 @@ The agent will continue running without screen monitoring.
 
 	// Register runner
 	ctx := context.Background()
+	log.Printf("Registering to mothership: %s", cfg.Server.Address)
+
 	registerReq := &client.RegisterRunnerRequest{
-		Name:                   runnerName,
-		Hostname:               getHostname(),
-		DeviceID:               deviceID,
-		OS:                     runtime.GOOS,
-		Architecture:           runtime.GOARCH,
-		MaxConcurrentTasks:     cfg.Tasks.MaxConcurrent,
-		Labels:                 getLabels(),
-		Token:                  cfg.Solder.Token,
+		Name:                    runnerName,
+		Hostname:                getHostname(),
+		DeviceID:                deviceID,
+		OS:                      runtime.GOOS,
+		Architecture:            runtime.GOARCH,
+		MaxConcurrentTasks:      cfg.Tasks.MaxConcurrent,
+		Labels:                  getLabels(),
+		Token:                   cfg.Solder.Token,
 		ScreenMonitoringEnabled: screenMonitoringEnabled,
 	}
 
@@ -116,18 +118,26 @@ The agent will continue running without screen monitoring.
 
 	registerResp, err := httpClient.RegisterRunner(ctx, registerReq)
 	if err != nil {
-		log.Fatalf("Failed to register runner: %v", err)
+		log.Fatalf("Registration failed to mothership %s: %v", cfg.Server.Address, err)
 	}
 
 	if !registerResp.Success {
-		log.Fatalf("Runner registration failed: %s", registerResp.Message)
+		log.Fatalf("Registration to mothership %s failed: %s", cfg.Server.Address, registerResp.Message)
 	}
 
 	runnerID := registerResp.RunnerID
-	log.Printf("Registered runner: %s", runnerID)
+	log.Printf("✅ Successfully registered to mothership %s with runner ID: %s", cfg.Server.Address, runnerID)
 
 	// Recreate client with runner ID
 	httpClient = client.NewClient(cfg.Server.Address, runnerID)
+
+	// Attempt to connect WebSocket for real-time communication
+	log.Printf("Attempting to connect WebSocket to mothership...")
+	if err := httpClient.ConnectAgentWebSocket(ctx); err != nil {
+		log.Printf("⚠️  WebSocket connection failed: %v. Falling back to HTTP polling.", err)
+	} else {
+		log.Printf("✅ WebSocket connected successfully. Using real-time communication.")
+	}
 
 	// Create executor
 	exec, err := executor.NewExecutor(cfg.Work.Directory)
@@ -170,8 +180,8 @@ The agent will continue running without screen monitoring.
 					streamingMu.Unlock()
 					return
 				case <-ticker.C:
-					// Check if streaming is requested
-					shouldStream, viewerCount, err := httpClient.GetScreenStreamStatus(ctx)
+					// Check if streaming is requested and get settings
+					status, err := httpClient.GetScreenStreamStatus(ctx)
 					if err != nil {
 						log.Printf("Failed to check screen stream status: %v", err)
 						continue
@@ -179,30 +189,55 @@ The agent will continue running without screen monitoring.
 
 					streamingMu.Lock()
 					isStreaming := streamingCancel != nil
+					
+					// Get current settings to check if they changed
+					currentQuality := screenCapture.GetQuality()
+					currentInterval := screenCapture.GetInterval()
+					desiredInterval := time.Duration(float64(time.Second) / status.FPS)
+					settingsChanged := currentQuality != int(status.Quality) || 
+						(currentInterval != desiredInterval && desiredInterval >= 100*time.Millisecond && desiredInterval <= 2*time.Second)
 
-					if shouldStream && !isStreaming {
-						// Start streaming
-						log.Printf("Starting screen streaming (viewers: %d)", viewerCount)
-						
+					// Update screen capture settings
+					screenCapture.UpdateSettings(int(status.Quality), status.FPS)
+					
+					// Update screen index if changed
+					if err := screenCapture.SetScreenIndex(int(status.ScreenIndex)); err != nil {
+						log.Printf("Failed to set screen index %d: %v", status.ScreenIndex, err)
+					}
+					
+					// If streaming and settings changed significantly, restart streaming
+					if isStreaming && settingsChanged {
+						log.Printf("Screen settings changed (quality=%d, fps=%.1f), restarting stream", 
+							status.Quality, status.FPS)
+						streamingCancel()
+						streamingCancel = nil
+						screenCapture.StopStreaming()
+						isStreaming = false // Reset flag so we restart below
+					}
+
+					if status.Streaming && !isStreaming {
+						// Start streaming with current settings
+						log.Printf("Starting screen streaming (viewers: %d, quality=%d, fps=%.1f)", 
+							status.ViewerCount, status.Quality, status.FPS)
+
 						// Try to connect WebSocket for faster streaming
 						if err := httpClient.ConnectScreenWebSocket(ctx); err != nil {
 							log.Printf("Failed to connect WebSocket, falling back to HTTP: %v", err)
 						} else {
 							log.Println("WebSocket connected for screen streaming")
 						}
-						
+
 						streamingCtx, streamingCancel = context.WithCancel(ctx)
 						go screenCapture.StartStreaming(streamingCtx, func(data []byte) error {
-							// Send frame asynchronously to avoid blocking
-							go func(frameData []byte) {
-								if err := httpClient.SendScreenFrameBinary(ctx, frameData); err != nil {
-									// Log error but don't block
-									log.Printf("Failed to send frame: %v", err)
-								}
-							}(data)
-							return nil // Return immediately, don't wait
+							// Send frame synchronously - the StartStreaming function now handles backpressure
+							// with its internal queue, so we can send directly here
+							if err := httpClient.SendScreenFrameBinary(streamingCtx, data); err != nil {
+								log.Printf("Failed to send frame: %v", err)
+								return err
+							}
+							return nil
 						})
-					} else if !shouldStream && isStreaming {
+					} else if !status.Streaming && isStreaming {
 						// Stop streaming
 						log.Println("Stopping screen streaming (no viewers)")
 						streamingCancel()
@@ -226,13 +261,34 @@ The agent will continue running without screen monitoring.
 	var activeTasks sync.Map
 	var taskCounter int32
 
-	// Job polling
+	// Job streaming (WebSocket with HTTP fallback)
 	jobChan := make(chan *client.Job, 10)
 	go func() {
+		useWebSocket := httpClient.IsAgentWebSocketConnected()
 		for {
-			if err := httpClient.StreamJobs(ctx, jobChan, 5*time.Second); err != nil {
-				log.Printf("Job stream error: %v", err)
-				time.Sleep(5 * time.Second)
+			var err error
+			if useWebSocket {
+				// Try WebSocket first
+				err = httpClient.StreamJobsWebSocket(ctx, jobChan)
+				if err != nil {
+					log.Printf("WebSocket job stream error: %v. Falling back to HTTP polling.", err)
+					useWebSocket = false
+					// Continue to HTTP fallback
+				}
+			}
+
+			if !useWebSocket {
+				// HTTP polling fallback
+				if err := httpClient.StreamJobs(ctx, jobChan, 5*time.Second); err != nil {
+					log.Printf("HTTP job stream error: %v", err)
+					time.Sleep(5 * time.Second)
+				}
+				// Try WebSocket again after a delay
+				time.Sleep(30 * time.Second)
+				if httpClient.IsAgentWebSocketConnected() {
+					log.Printf("WebSocket reconnected, switching to real-time communication")
+					useWebSocket = true
+				}
 			}
 		}
 	}()
@@ -263,22 +319,28 @@ The agent will continue running without screen monitoring.
 						destPath := filepath.Join(taskDir, fmt.Sprintf("file_%d", i))
 						if err := dl.DownloadFile(ctx, fileID, destPath); err != nil {
 							log.Printf("Failed to download file %s: %v", fileID, err)
-							httpClient.UpdateTaskStatusWithID(ctx, taskID, &client.UpdateTaskStatusRequest{
+							failReq := &client.UpdateTaskStatusRequest{
 								Status:       "failed",
 								ErrorMessage: fmt.Sprintf("failed to download file: %v", err),
 								Timestamp:    time.Now().Unix(),
-							})
+							}
+							if err := httpClient.SendTaskStatusWebSocket(ctx, taskID, failReq); err != nil {
+								httpClient.UpdateTaskStatusWithID(ctx, taskID, failReq)
+							}
 							activeTasks.Delete(taskID)
 							hb.SetActiveTasks(int32(len(semaphore)))
 							return
 						}
 					}
 
-					// Notify task started
-					httpClient.UpdateTaskStatusWithID(ctx, taskID, &client.UpdateTaskStatusRequest{
+					// Notify task started (WebSocket with HTTP fallback)
+					statusReq := &client.UpdateTaskStatusRequest{
 						Status:    "running",
 						Timestamp: time.Now().Unix(),
-					})
+					}
+					if err := httpClient.SendTaskStatusWebSocket(ctx, taskID, statusReq); err != nil {
+						httpClient.UpdateTaskStatusWithID(ctx, taskID, statusReq)
+					}
 
 					// Create stdout/stderr buffers
 					stdoutBuf := make([]byte, 0)
@@ -338,15 +400,18 @@ The agent will continue running without screen monitoring.
 						}
 					}
 
-					// Send final status
-					httpClient.UpdateTaskStatusWithID(ctx, taskID, &client.UpdateTaskStatusRequest{
+					// Send final status (WebSocket with HTTP fallback)
+					finalStatusReq := &client.UpdateTaskStatusRequest{
 						Status:       status,
 						ExitCode:     &exitCode,
 						ErrorMessage: errorMsg,
 						Stdout:       stdoutBuf,
 						Stderr:       stderrBuf,
 						Timestamp:    time.Now().Unix(),
-					})
+					}
+					if err := httpClient.SendTaskStatusWebSocket(ctx, taskID, finalStatusReq); err != nil {
+						httpClient.UpdateTaskStatusWithID(ctx, taskID, finalStatusReq)
+					}
 
 					log.Printf("Task %s completed with status %s", taskID, status)
 					activeTasks.Delete(taskID)
@@ -421,7 +486,7 @@ type bufferWriter struct {
 func (w *bufferWriter) Write(p []byte) (n int, err error) {
 	*w.buf = append(*w.buf, p...)
 
-	// Send output update
+	// Send output update (WebSocket with HTTP fallback)
 	req := &client.UpdateTaskStatusRequest{
 		Status:    "running",
 		Timestamp: time.Now().Unix(),
@@ -433,7 +498,11 @@ func (w *bufferWriter) Write(p []byte) (n int, err error) {
 	}
 
 	// Don't block on status updates
-	go w.client.UpdateTaskStatusWithID(w.ctx, w.taskID, req)
+	go func() {
+		if err := w.client.SendTaskStatusWebSocket(w.ctx, w.taskID, req); err != nil {
+			w.client.UpdateTaskStatusWithID(w.ctx, w.taskID, req)
+		}
+	}()
 
 	return len(p), nil
 }

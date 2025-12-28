@@ -100,13 +100,32 @@ func (h *Heartbeat) sendHeartbeat(ctx context.Context) {
 		}
 	}
 	
-	resp, err := h.client.Heartbeat(ctx, h.status, activeTasks, resourceUpdate)
+	// Try WebSocket first, fallback to HTTP
+	var resp *client.HeartbeatResponse
+	var err error
+	
+	if h.client.IsAgentWebSocketConnected() {
+		err = h.client.SendHeartbeatWebSocket(ctx, h.status, activeTasks, resourceUpdate)
+		if err != nil {
+			// WebSocket failed, fallback to HTTP
+			log.Printf("WebSocket heartbeat failed: %v, falling back to HTTP", err)
+			resp, err = h.client.Heartbeat(ctx, h.status, activeTasks, resourceUpdate)
+		} else {
+			// WebSocket success - use default interval (response not available via WebSocket)
+			// For now, keep current interval. In future, we could add response handling
+			return
+		}
+	} else {
+		// Use HTTP
+		resp, err = h.client.Heartbeat(ctx, h.status, activeTasks, resourceUpdate)
+	}
+	
 	if err != nil {
 		log.Printf("Failed to send heartbeat: %v", err)
 		return
 	}
 	
-	if resp.Success && resp.NextHeartbeatInterval > 0 {
+	if resp != nil && resp.Success && resp.NextHeartbeatInterval > 0 {
 		// Update interval if mothership requests different interval
 		newInterval := time.Duration(resp.NextHeartbeatInterval) * time.Second
 		if newInterval != h.interval {

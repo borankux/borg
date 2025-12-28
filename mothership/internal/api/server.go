@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 
 	"borg/mothership/internal/queue"
@@ -17,13 +19,36 @@ type Server struct {
 	router    *gin.Engine
 	hub       *websocket.Hub
 	screenHub *websocket.ScreenHub
+	agentHub  *websocket.AgentHub
 }
 
 // NewServer creates a new API server
-func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *websocket.ScreenHub, storage *storage.Storage) *Server {
-	handler := NewHandler(db, q, storage, screenHub)
+func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *websocket.ScreenHub, agentHub *websocket.AgentHub, storage *storage.Storage) *Server {
+	handler := NewHandler(db, q, storage, screenHub, agentHub)
 	
-	router := gin.Default()
+	// Use gin.New() instead of gin.Default() to avoid default logging
+	// We'll add a custom logger that skips verbose endpoints
+	router := gin.New()
+	
+	// Custom logger that skips logging for screen frame endpoint
+	router.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		// Skip logging for screen frame endpoint (too verbose - frames come frequently)
+		if len(param.Path) > 20 && param.Path[len(param.Path)-13:] == "/screen/frame" {
+			return ""
+		}
+		// Default log format for other endpoints
+		return fmt.Sprintf("[%s] %s %s %d %s %s \"%s\" %s\n",
+			param.TimeStamp.Format("2006/01/02 - 15:04:05"),
+			param.ClientIP,
+			param.Method,
+			param.StatusCode,
+			param.Latency,
+			param.Path,
+			param.Request.UserAgent(),
+			param.ErrorMessage,
+		)
+	}))
+	router.Use(gin.Recovery())
 	
 	// CORS middleware
 	router.Use(func(c *gin.Context) {
@@ -48,6 +73,9 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 	
 	// Screen streaming WebSocket endpoint (for agents to send frames)
 	router.GET("/ws/screen/agent/:runnerID", websocket.HandleAgentScreenWebSocket(screenHub))
+	
+	// Agent WebSocket endpoint (for real-time communication)
+	router.GET("/ws/agent/:runnerID", websocket.HandleAgentWebSocket(agentHub, db))
 	
 	// Download endpoint (before API routes)
 	router.GET("/api/v1/download/solder.exe", handler.DownloadSolder)
@@ -77,6 +105,7 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 			protected.GET("/runners", handler.ListRunners)
 			protected.GET("/runners/:id", handler.GetRunner)
 			protected.PATCH("/runners/:id/rename", handler.RenameRunner)
+			protected.PATCH("/runners/:id/screen-settings", handler.UpdateScreenSettings)
 			protected.DELETE("/runners/:id", handler.DeleteRunner)
 			
 			// Logs
@@ -98,6 +127,9 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 		api.POST("/runners/:id/screen/frame", handler.UploadScreenFrame)
 		api.GET("/runners/:id/screen/status", handler.GetScreenStreamStatus)
 		
+		// Screen information endpoint (protected - for dashboard)
+		protected.GET("/runners/:id/screens", handler.GetAvailableScreens)
+		
 		// Screenshot endpoints (deprecated - kept for backward compatibility, unprotected)
 		api.POST("/runners/:id/screenshots", handler.UploadScreenshot)
 		api.GET("/runners/:id/screenshots", handler.GetScreenshots)
@@ -112,6 +144,7 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 		router:    router,
 		hub:       hub,
 		screenHub: screenHub,
+		agentHub:  agentHub,
 	}
 }
 
@@ -123,6 +156,26 @@ func (s *Server) GetHub() *websocket.Hub {
 // GetScreenHub returns the screen streaming hub
 func (s *Server) GetScreenHub() *websocket.ScreenHub {
 	return s.screenHub
+}
+
+// GetAgentHub returns the agent WebSocket hub
+func (s *Server) GetAgentHub() *websocket.AgentHub {
+	return s.agentHub
+}
+
+// SetupAgentMessageHandler sets up the callback for handling agent WebSocket messages
+func (s *Server) SetupAgentMessageHandler() {
+	s.agentHub.SetMessageHandler(func(runnerID string, messageType string, data interface{}) {
+		// Handle incoming WebSocket messages from agents
+		switch messageType {
+		case "heartbeat":
+			s.handler.handleWebSocketHeartbeat(runnerID, data)
+		case "task_status":
+			s.handler.handleWebSocketTaskStatus(runnerID, data)
+		default:
+			log.Printf("Unknown message type from runner %s: %s", runnerID, messageType)
+		}
+	})
 }
 
 // GetRouter returns the router (for WebSocket setup)
