@@ -15,6 +15,7 @@ import (
 
 	"borg/mothership/internal/auth"
 	"borg/mothership/internal/csvparser"
+	"borg/mothership/internal/dataset"
 	"borg/mothership/internal/models"
 	"borg/mothership/internal/processor"
 	"borg/mothership/internal/queue"
@@ -28,23 +29,25 @@ import (
 
 // Handler contains API handlers
 type Handler struct {
-	db        *gorm.DB
-	queue     *queue.Queue
-	storage   *storage.Storage
-	screenHub *websocket.ScreenHub
-	agentHub  *websocket.AgentHub
-	processor *processor.Processor
+	db            *gorm.DB
+	queue         *queue.Queue
+	storage       *storage.Storage
+	screenHub     *websocket.ScreenHub
+	agentHub      *websocket.AgentHub
+	processor     *processor.Processor
+	datasetParser *dataset.Parser
 }
 
 // NewHandler creates a new API handler
 func NewHandler(db *gorm.DB, q *queue.Queue, s *storage.Storage, screenHub *websocket.ScreenHub, agentHub *websocket.AgentHub) *Handler {
 	return &Handler{
-		db:        db,
-		queue:     q,
-		storage:   s,
-		screenHub: screenHub,
-		agentHub:  agentHub,
-		processor: processor.NewProcessor(db, s),
+		db:            db,
+		queue:         q,
+		storage:       s,
+		screenHub:     screenHub,
+		agentHub:      agentHub,
+		processor:     processor.NewProcessor(db, s),
+		datasetParser: dataset.NewParser(db, s),
 	}
 }
 
@@ -99,16 +102,19 @@ func (h *Handler) GetJob(c *gin.Context) {
 
 // CreateJobRequest represents job creation request
 type CreateJobRequest struct {
-	Name             string          `json:"name"`
-	Description      string          `json:"description"`
-	Type             string          `json:"type"`
-	Priority         int32           `json:"priority"`
-	Command          string          `json:"command"`
-	Args             json.RawMessage `json:"args"` // Can be array or null
-	Env              json.RawMessage `json:"env"`  // Can be object or null
-	WorkingDirectory string          `json:"working_directory"`
-	TimeoutSeconds   int64           `json:"timeout_seconds"`
-	MaxRetries       int32           `json:"max_retries"`
+	Name                   string          `json:"name"`
+	Description            string          `json:"description"`
+	Type                   string          `json:"type"`
+	Priority               int32           `json:"priority"`
+	Command                string          `json:"command"`
+	Args                   json.RawMessage `json:"args"` // Can be array or null
+	Env                    json.RawMessage `json:"env"`  // Can be object or null
+	WorkingDirectory       string          `json:"working_directory"`
+	TimeoutSeconds         int64           `json:"timeout_seconds"`
+	MaxRetries             int32           `json:"max_retries"`
+	DatasetID              string          `json:"dataset_id"`                // For dataset type jobs
+	ProcessingScriptID     string          `json:"processing_script_id"`      // File ID of Python processing script
+	PostProcessingScriptID string          `json:"post_processing_script_id"` // File ID of Python post-processing script
 }
 
 // CreateJob creates a new job
@@ -124,10 +130,6 @@ func (h *Handler) CreateJob(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
-	if req.Command == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "command is required"})
-		return
-	}
 
 	// Set defaults
 	if req.Type == "" {
@@ -135,6 +137,44 @@ func (h *Handler) CreateJob(c *gin.Context) {
 	}
 	if req.Priority == 0 {
 		req.Priority = 1
+	}
+
+	// Validate dataset type jobs
+	if req.Type == "dataset" {
+		if req.DatasetID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "dataset_id is required for dataset type jobs"})
+			return
+		}
+		if req.ProcessingScriptID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "processing_script_id is required for dataset type jobs"})
+			return
+		}
+		// Verify dataset exists
+		var dataset models.Dataset
+		if err := h.db.First(&dataset, "id = ?", req.DatasetID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "dataset not found"})
+			return
+		}
+		// Verify processing script exists
+		var processingFile models.File
+		if err := h.db.First(&processingFile, "id = ?", req.ProcessingScriptID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "processing script file not found"})
+			return
+		}
+		// Verify post-processing script if provided
+		if req.PostProcessingScriptID != "" {
+			var postProcessingFile models.File
+			if err := h.db.First(&postProcessingFile, "id = ?", req.PostProcessingScriptID).Error; err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "post-processing script file not found"})
+				return
+			}
+		}
+	} else {
+		// For non-dataset jobs, command is required
+		if req.Command == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "command is required"})
+			return
+		}
 	}
 
 	// Convert to Job model
@@ -148,6 +188,15 @@ func (h *Handler) CreateJob(c *gin.Context) {
 		TimeoutSeconds:   req.TimeoutSeconds,
 		MaxRetries:       req.MaxRetries,
 		Metadata:         "{}", // Initialize Metadata as empty JSON object
+	}
+
+	// Set dataset-specific fields
+	if req.Type == "dataset" {
+		job.CSVDatasetID = req.DatasetID
+		job.ProcessorScriptID = req.PostProcessingScriptID // Post-processing script
+		// For dataset jobs, command will be the processing script path
+		// We'll set it to the processing script ID for now
+		job.Command = req.ProcessingScriptID
 	}
 
 	// Convert Args and Env to JSON strings - ensure valid JSON for PostgreSQL JSONB
@@ -209,8 +258,24 @@ func (h *Handler) CreateJob(c *gin.Context) {
 		return
 	}
 
-	// Notify all idle agents that a task is available
-	go h.notifyIdleAgentsOfTask()
+	// For dataset jobs, parse CSV and create tasks in background
+	if req.Type == "dataset" {
+		go func() {
+			tasks, err := h.datasetParser.ParseDatasetCSV(req.DatasetID, job.ID)
+			if err != nil {
+				log.Printf("Error parsing dataset CSV for job %s: %v", job.ID, err)
+				// Update job status to failed
+				h.db.Model(&models.Job{}).Where("id = ?", job.ID).Update("status", "failed")
+				return
+			}
+			log.Printf("Created %d tasks from dataset for job %s", len(tasks), job.ID)
+			// Notify agents that tasks are available
+			go h.notifyIdleAgentsOfTask()
+		}()
+	} else {
+		// Notify all idle agents that a task is available
+		go h.notifyIdleAgentsOfTask()
+	}
 
 	c.JSON(http.StatusCreated, job)
 }
@@ -326,8 +391,8 @@ func (h *Handler) UpdateJob(c *gin.Context) {
 		job.MaxRetries = *req.MaxRetries
 	}
 
-	// Handle Args update
-	if req.Args != nil {
+	// Handle Args update (only if provided - json.RawMessage is nil if field is missing)
+	if len(req.Args) > 0 {
 		argsStr := strings.TrimSpace(string(req.Args))
 		if len(argsStr) > 0 && argsStr != "null" {
 			var argsArray []interface{}
@@ -350,12 +415,14 @@ func (h *Handler) UpdateJob(c *gin.Context) {
 				}
 			}
 		} else {
+			// Explicitly set to empty array if null/empty string is provided
 			job.Args = "[]"
 		}
 	}
+	// Note: If Args field is missing from JSON, we don't update it (leave existing value)
 
-	// Handle Env update
-	if req.Env != nil {
+	// Handle Env update (only if provided - json.RawMessage is nil if field is missing)
+	if len(req.Env) > 0 {
 		envStr := strings.TrimSpace(string(req.Env))
 		if len(envStr) > 0 && envStr != "null" {
 			var envMap map[string]interface{}
@@ -369,9 +436,11 @@ func (h *Handler) UpdateJob(c *gin.Context) {
 				job.Env = "{}"
 			}
 		} else {
+			// Explicitly set to empty object if null/empty string is provided
 			job.Env = "{}"
 		}
 	}
+	// Note: If Env field is missing from JSON, we don't update it (leave existing value)
 
 	job.UpdatedAt = time.Now()
 
@@ -871,6 +940,12 @@ func (h *Handler) GetNextTask(c *gin.Context) {
 		}
 	}
 
+	// If dataset type, add processing script to required files
+	if job.Type == "dataset" && job.Command != "" {
+		// Command contains the processing script file ID
+		requiredFiles = append(requiredFiles, job.Command)
+	}
+
 	// Parse TaskData if present
 	var taskData map[string]interface{}
 	if task.TaskData != "" {
@@ -965,6 +1040,98 @@ func (h *Handler) UpdateTaskStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, UpdateTaskStatusResponse{
 		Success: true,
 		Message: "task status updated",
+	})
+}
+
+// UpdateTaskResultRequest represents task result update request
+type UpdateTaskResultRequest struct {
+	Result json.RawMessage `json:"result"` // JSON result data
+	Status string          `json:"status"` // Optional: pending, running, success, failed
+	Reason string          `json:"reason"` // Optional: failure reason if status is failed
+}
+
+// UpdateTaskResult updates task result (for Python scripts to call)
+func (h *Handler) UpdateTaskResult(c *gin.Context) {
+	taskID := c.Param("id")
+
+	var req UpdateTaskResultRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get task
+	var task models.Task
+	if err := h.db.First(&task, "id = ?", taskID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+
+	// Validate result JSON if provided
+	if len(req.Result) > 0 {
+		var resultData interface{}
+		if err := json.Unmarshal(req.Result, &resultData); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON in result field"})
+			return
+		}
+		task.Result = string(req.Result)
+	}
+
+	// Update status if provided
+	if req.Status != "" {
+		validStatuses := map[string]bool{
+			"pending": true,
+			"running": true,
+			"success": true,
+			"failed":  true,
+		}
+		if !validStatuses[req.Status] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status. Must be one of: pending, running, success, failed"})
+			return
+		}
+		task.Status = req.Status
+
+		// Set completed_at if status is success or failed
+		if req.Status == "success" || req.Status == "failed" {
+			now := time.Now()
+			task.CompletedAt = &now
+		}
+
+		// Set reason if status is failed
+		if req.Status == "failed" {
+			task.Reason = req.Reason
+			if task.Reason == "" {
+				task.Reason = "Task failed without reason"
+			}
+		}
+	}
+
+	task.UpdatedAt = time.Now()
+
+	if err := h.db.Save(&task).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// If task completed successfully, trigger post-processing if job has post-processing script
+	if req.Status == "success" {
+		var job models.Job
+		if err := h.db.First(&job, "id = ?", task.JobID).Error; err == nil {
+			if job.ProcessorScriptID != "" && job.Type == "dataset" {
+				// Trigger post-processing asynchronously
+				go h.processor.PostProcessTask(task.ID)
+			}
+		}
+	}
+
+	// Update job status based on task completion
+	if req.Status == "success" || req.Status == "failed" {
+		h.queue.UpdateTaskStatus(taskID, req.Status, nil, req.Reason)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "task result updated",
 	})
 }
 
@@ -1951,4 +2118,161 @@ func (h *Handler) ListJobResults(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, results)
+}
+
+// UploadDataset handles CSV dataset upload
+func (h *Handler) UploadDataset(c *gin.Context) {
+	name := c.PostForm("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	// Check if dataset name already exists
+	var existingDataset models.Dataset
+	if err := h.db.Where("name = ?", name).First(&existingDataset).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "dataset with this name already exists"})
+		return
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required: " + err.Error()})
+		return
+	}
+
+	// Validate file extension
+	if !strings.HasSuffix(strings.ToLower(file.Filename), ".csv") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file must be a CSV file"})
+		return
+	}
+
+	// Open uploaded file
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer src.Close()
+
+	// Validate CSV format
+	csvRows, err := csvparser.ParseCSV(src)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid CSV format: " + err.Error()})
+		return
+	}
+
+	if len(csvRows) < 2 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "CSV must have at least a header row and one data row"})
+		return
+	}
+
+	// Save CSV file
+	src.Seek(0, 0) // Reset reader
+	fileID, hash, size, err := h.storage.SaveFile(src, file.Filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create file record
+	fileRecord := &models.File{
+		ID:          fileID,
+		Name:        file.Filename,
+		Path:        fileID,
+		Size:        size,
+		ContentType: file.Header.Get("Content-Type"),
+		Hash:        hash,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := h.db.Create(fileRecord).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create dataset record
+	datasetID := uuid.New().String()
+	dataset := &models.Dataset{
+		ID:        datasetID,
+		Name:      name,
+		Filepath:  fileID,
+		FileID:    fileID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := h.db.Create(dataset).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, dataset)
+}
+
+// ListDatasets returns a list of all datasets
+func (h *Handler) ListDatasets(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+
+	var datasets []models.Dataset
+	var total int64
+
+	if err := h.db.Model(&models.Dataset{}).Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.db.Preload("File").Order("created_at DESC").Limit(limit).Offset(offset).Find(&datasets).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"datasets": datasets,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+	})
+}
+
+// GetDataset returns a single dataset
+func (h *Handler) GetDataset(c *gin.Context) {
+	datasetID := c.Param("id")
+
+	var dataset models.Dataset
+	if err := h.db.Preload("File").Preload("Jobs").First(&dataset, "id = ?", datasetID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "dataset not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, dataset)
+}
+
+// DeleteDataset deletes a dataset
+func (h *Handler) DeleteDataset(c *gin.Context) {
+	datasetID := c.Param("id")
+
+	var dataset models.Dataset
+	if err := h.db.First(&dataset, "id = ?", datasetID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "dataset not found"})
+		return
+	}
+
+	// Check if dataset is used by any jobs
+	var jobCount int64
+	h.db.Model(&models.Job{}).Where("csv_dataset_id = ?", datasetID).Count(&jobCount)
+	if jobCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot delete dataset that is used by jobs"})
+		return
+	}
+
+	// Soft delete
+	if err := h.db.Delete(&dataset).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "dataset deleted"})
 }

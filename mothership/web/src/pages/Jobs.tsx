@@ -18,6 +18,11 @@ export default function Jobs() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; jobId: string; jobName: string }>({
+    isOpen: false,
+    jobId: '',
+    jobName: '',
+  })
   const [jobForm, setJobForm] = useState({
     name: '',
     description: '',
@@ -42,28 +47,54 @@ export default function Jobs() {
   
   const pauseMutation = useMutation({
     mutationFn: async (jobId: string) => {
-      await axios.post(`/api/v1/jobs/${jobId}/pause`)
+      const res = await axios.post(`/api/v1/jobs/${jobId}/pause`)
+      return res.data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+    onError: (error: any) => {
+      alert(`Failed to pause job: ${error.response?.data?.error || error.message}`)
     },
   })
   
   const resumeMutation = useMutation({
     mutationFn: async (jobId: string) => {
-      await axios.post(`/api/v1/jobs/${jobId}/resume`)
+      const res = await axios.post(`/api/v1/jobs/${jobId}/resume`)
+      return res.data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+    onError: (error: any) => {
+      alert(`Failed to resume job: ${error.response?.data?.error || error.message}`)
     },
   })
   
   const cancelMutation = useMutation({
     mutationFn: async (jobId: string) => {
-      await axios.post(`/api/v1/jobs/${jobId}/cancel`)
+      const res = await axios.post(`/api/v1/jobs/${jobId}/cancel`)
+      return res.data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+    onError: (error: any) => {
+      alert(`Failed to cancel job: ${error.response?.data?.error || error.message}`)
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: async (jobId: string) => {
+      const res = await axios.delete(`/api/v1/jobs/${jobId}`)
+      return res.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      setDeleteModal({ isOpen: false, jobId: '', jobName: '' })
+    },
+    onError: (error: any) => {
+      alert(`Failed to delete job: ${error.response?.data?.error || error.message}`)
     },
   })
 
@@ -200,27 +231,38 @@ export default function Jobs() {
                 {job.status === 'running' && (
                   <button
                     onClick={() => pauseMutation.mutate(job.id)}
-                    className="px-3 py-1 bg-yellow-500/20 text-yellow-400 rounded hover:bg-yellow-500/30 transition-colors"
+                    disabled={pauseMutation.isPending}
+                    className="px-3 py-1 bg-yellow-500/20 text-yellow-400 rounded hover:bg-yellow-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Pause
+                    {pauseMutation.isPending ? 'Pausing...' : 'Pause'}
                   </button>
                 )}
                 {job.status === 'paused' && (
                   <button
                     onClick={() => resumeMutation.mutate(job.id)}
-                    className="px-3 py-1 bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors"
+                    disabled={resumeMutation.isPending}
+                    className="px-3 py-1 bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Resume
+                    {resumeMutation.isPending ? 'Resuming...' : 'Resume'}
                   </button>
                 )}
                 {(job.status === 'pending' || job.status === 'running' || job.status === 'paused') && (
                   <button
                     onClick={() => cancelMutation.mutate(job.id)}
-                    className="px-3 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors"
+                    disabled={cancelMutation.isPending}
+                    className="px-3 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Cancel
+                    {cancelMutation.isPending ? 'Cancelling...' : 'Cancel'}
                   </button>
                 )}
+                <button
+                  onClick={() => setDeleteModal({ isOpen: true, jobId: job.id, jobName: job.name })}
+                  disabled={deleteMutation.isPending}
+                  className="px-3 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Delete job"
+                >
+                  Delete
+                </button>
               </div>
             </div>
           </GlassCard>
@@ -359,6 +401,21 @@ export default function Jobs() {
             </div>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={deleteModal.isOpen}
+        onClose={() => setDeleteModal({ isOpen: false, jobId: '', jobName: '' })}
+        title="Delete Job"
+        onConfirm={() => deleteMutation.mutate(deleteModal.jobId)}
+        confirmText="Delete"
+        showCancel={true}
+        danger
+      >
+        <p className="text-gray-300">
+          Are you sure you want to delete job <strong className="text-white">"{deleteModal.jobName}"</strong>?
+          This action cannot be undone.
+        </p>
       </Modal>
     </div>
   )

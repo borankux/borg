@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import GlassCard from '../components/GlassCard'
 import Modal from '../components/Modal'
-import { EditIcon, CheckIcon, XIcon, TrashIcon, CPUIcon, RAMIcon, DiskIcon, IPIcon, OSIcon, GPUIcon, MoreIcon, MonitorIcon } from '../components/Icons'
+import { EditIcon, CheckIcon, XIcon, TrashIcon, CPUIcon, RAMIcon, DiskIcon, IPIcon, OSIcon, GPUIcon, MoreIcon, MonitorIcon, PythonIcon, NodeIcon, JavaIcon, GoIcon, RubyIcon, PHPIcon, DefaultRuntimeIcon } from '../components/Icons'
 
 interface GPUInfo {
   name: string
@@ -187,6 +187,18 @@ export default function Runners() {
       }
     }
     return []
+  }
+
+  // Get runtime icon component based on runtime name
+  const getRuntimeIcon = (runtimeName: string) => {
+    const name = runtimeName.toLowerCase()
+    if (name.includes('python')) return <PythonIcon />
+    if (name.includes('node') || name.includes('nodejs') || name.includes('javascript')) return <NodeIcon />
+    if (name.includes('java')) return <JavaIcon />
+    if (name.includes('go') || name.includes('golang')) return <GoIcon />
+    if (name.includes('ruby')) return <RubyIcon />
+    if (name.includes('php')) return <PHPIcon />
+    return <DefaultRuntimeIcon />
   }
 
   // Formatting helper functions
@@ -488,10 +500,11 @@ export default function Runners() {
                       {runtimes.map((runtime, idx) => (
                         <div
                           key={idx}
-                          className="px-2 py-1 bg-blue-600/20 border border-blue-500/30 rounded text-xs text-blue-300"
+                          className="px-2 py-1 bg-blue-600/20 border border-blue-500/30 rounded text-xs text-blue-300 flex items-center gap-1.5"
                           title={runtime.path || runtime.url || runtime.name}
                         >
-                          {runtime.name}
+                          <span className="flex-shrink-0">{getRuntimeIcon(runtime.name)}</span>
+                          <span>{runtime.name}</span>
                         </div>
                       ))}
                     </div>

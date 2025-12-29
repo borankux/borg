@@ -124,6 +124,12 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 			protected.POST("/jobs/:id/dataset/upload", handler.UploadCSVDataset)
 			protected.GET("/jobs/:id/results", handler.ListJobResults)
 
+			// Datasets
+			protected.POST("/datasets", handler.UploadDataset)
+			protected.GET("/datasets", handler.ListDatasets)
+			protected.GET("/datasets/:id", handler.GetDataset)
+			protected.DELETE("/datasets/:id", handler.DeleteDataset)
+
 			// Current user endpoint
 			protected.GET("/auth/me", handler.GetCurrentUser)
 		}
@@ -133,6 +139,7 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 		api.POST("/runners/:id/heartbeat", handler.Heartbeat)
 		api.GET("/runners/:id/tasks/next", handler.GetNextTask)
 		api.POST("/tasks/:id/status", handler.UpdateTaskStatus)
+		api.POST("/tasks/:id/result", handler.UpdateTaskResult)
 		api.GET("/files/:id/download", handler.DownloadFile)
 		api.POST("/artifacts/upload", handler.UploadArtifact)
 

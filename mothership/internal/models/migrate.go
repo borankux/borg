@@ -36,6 +36,23 @@ func Migrate(db *gorm.DB) error {
 		}
 	}
 	
+	// Add new columns to Task table if they don't exist
+	if !db.Migrator().HasColumn(&Task{}, "is_dispatched") {
+		if err := db.Migrator().AddColumn(&Task{}, "is_dispatched"); err != nil {
+			// Column might already exist, continue
+		}
+	}
+	if !db.Migrator().HasColumn(&Task{}, "result") {
+		if err := db.Migrator().AddColumn(&Task{}, "result"); err != nil {
+			// Column might already exist, continue
+		}
+	}
+	if !db.Migrator().HasColumn(&Task{}, "reason") {
+		if err := db.Migrator().AddColumn(&Task{}, "reason"); err != nil {
+			// Column might already exist, continue
+		}
+	}
+
 	// Run full migration including User model
 	if err := db.AutoMigrate(
 		&User{},
@@ -49,6 +66,7 @@ func Migrate(db *gorm.DB) error {
 		&ExecutorBinary{},
 		&ProcessorScript{},
 		&JobResult{},
+		&Dataset{},
 	); err != nil {
 		return err
 	}

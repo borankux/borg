@@ -78,6 +78,7 @@ func (q *Queue) GetNextTask(runnerID string, runnerCapabilities map[string]inter
 	now := time.Now()
 	task.RunnerID = runnerID
 	task.Status = "running"
+	task.IsDispatched = true
 	task.StartedAt = &now
 	task.UpdatedAt = now
 

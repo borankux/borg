@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -79,23 +80,25 @@ func (e *Executor) Execute(ctx context.Context, job *Job, taskDir string, stdout
 	runtimeConfig, isRuntime := e.runtimes[job.Type]
 	e.runtimeMu.RUnlock()
 
-	if isRuntime {
-		cmd, err = e.executeRuntime(ctx, job, taskDir, runtimeConfig)
-	} else {
-		// Use existing job types
-		switch job.Type {
-		case "shell":
-			cmd, err = e.executeShell(ctx, job, taskDir)
-		case "binary":
-			cmd, err = e.executeBinary(ctx, job, taskDir)
-		case "docker":
-			cmd, err = e.executeDocker(ctx, job, taskDir)
-		case "executor_binary":
-			cmd, err = e.executeExecutorBinary(ctx, job, taskDir)
-		default:
-			return nil, fmt.Errorf("unsupported job type: %v", job.Type)
+		if isRuntime {
+			cmd, err = e.executeRuntime(ctx, job, taskDir, runtimeConfig)
+		} else {
+			// Use existing job types
+			switch job.Type {
+			case "shell":
+				cmd, err = e.executeShell(ctx, job, taskDir)
+			case "binary":
+				cmd, err = e.executeBinary(ctx, job, taskDir)
+			case "docker":
+				cmd, err = e.executeDocker(ctx, job, taskDir)
+			case "executor_binary":
+				cmd, err = e.executeExecutorBinary(ctx, job, taskDir)
+			case "dataset":
+				cmd, err = e.executeDataset(ctx, job, taskDir)
+			default:
+				return nil, fmt.Errorf("unsupported job type: %v", job.Type)
+			}
 		}
-	}
 	
 	if err != nil {
 		return nil, err
@@ -321,6 +324,73 @@ func (e *Executor) executeRuntime(ctx context.Context, job *Job, taskDir string,
 	args = append(args, job.Args...)
 
 	cmd := exec.CommandContext(ctx, executablePath, args...)
+	return cmd, nil
+}
+
+// executeDataset executes a Python processing script for dataset jobs
+func (e *Executor) executeDataset(ctx context.Context, job *Job, taskDir string) (*exec.Cmd, error) {
+	// Find the processing script in RequiredFiles
+	// The Command field contains the processing script file ID
+	processingScriptID := job.Command
+	var scriptPath string
+
+	// Find the script file in RequiredFiles
+	for i, fileID := range job.RequiredFiles {
+		if fileID == processingScriptID {
+			scriptPath = filepath.Join(taskDir, fmt.Sprintf("file_%d", i))
+			break
+		}
+	}
+
+	if scriptPath == "" {
+		// Try to find by looking for Python files
+		files, err := os.ReadDir(taskDir)
+		if err == nil {
+			for _, file := range files {
+				if !file.IsDir() && (strings.HasSuffix(file.Name(), ".py") || filepath.Ext(file.Name()) == "") {
+					potentialPath := filepath.Join(taskDir, file.Name())
+					if info, err := os.Stat(potentialPath); err == nil && !info.IsDir() {
+						scriptPath = potentialPath
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if scriptPath == "" {
+		return nil, fmt.Errorf("processing script not found in task directory")
+	}
+
+	// Write TaskData as JSON file
+	env := os.Environ()
+	if job.TaskData != nil && len(job.TaskData) > 0 {
+		taskDataJSON, err := json.Marshal(job.TaskData)
+		if err == nil {
+			// Write to file
+			taskDataPath := filepath.Join(taskDir, "task_data.json")
+			os.WriteFile(taskDataPath, taskDataJSON, 0644)
+
+			// Set environment variable
+			env = append(env, fmt.Sprintf("TASK_DATA_JSON=%s", string(taskDataJSON)))
+		}
+	}
+
+	// Set environment variables for API access
+	// These will be used by the Python script to update results
+	env = append(env, fmt.Sprintf("TASK_ID=%s", job.TaskID))
+	env = append(env, fmt.Sprintf("JOB_ID=%s", job.JobID))
+	// API_URL will be set by the caller if available
+
+	// Set other environment variables from job
+	for k, v := range job.Env {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Execute Python script with task_data.json as argument
+	// The script should read task_data.json and can call the API to update results
+	cmd := exec.CommandContext(ctx, "python3", scriptPath, filepath.Join(taskDir, "task_data.json"))
+	cmd.Env = env
 	return cmd, nil
 }
 

@@ -17,6 +17,9 @@ type Task struct {
 	ErrorMessage  string     `gorm:"type:text" json:"error_message"`
 	TaskData      string     `gorm:"type:jsonb" json:"task_data"` // CSV row data as JSON
 	RetryCount    int32      `gorm:"default:0" json:"retry_count"`
+	IsDispatched  bool       `gorm:"default:false;index" json:"is_dispatched"` // Whether task has been dispatched to a runner
+	Result        string     `gorm:"type:jsonb" json:"result"`                  // JSON result data from processing
+	Reason        string     `gorm:"type:text" json:"reason"`                  // Failure reason when status is failed
 	CreatedAt     time.Time  `gorm:"not null" json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
