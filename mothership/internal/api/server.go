@@ -97,6 +97,8 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 			protected.GET("/jobs", handler.ListJobs)
 			protected.POST("/jobs", handler.CreateJob)
 			protected.GET("/jobs/:id", handler.GetJob)
+			protected.PATCH("/jobs/:id", handler.UpdateJob)
+			protected.DELETE("/jobs/:id", handler.DeleteJob)
 			protected.POST("/jobs/:id/pause", handler.PauseJob)
 			protected.POST("/jobs/:id/resume", handler.ResumeJob)
 			protected.POST("/jobs/:id/cancel", handler.CancelJob)

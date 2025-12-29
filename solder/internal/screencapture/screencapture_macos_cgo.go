@@ -340,10 +340,6 @@ func getDisplayWidth(displayID uint32) uint32 {
 	return uint32(C.CGDisplayPixelsWide(C.uint32_t(displayID)))
 }
 
-func getDisplayWidth(displayID uint32) uint32 {
-	return uint32(C.CGDisplayPixelsWide(C.uint32_t(displayID)))
-}
-
 func getDisplayHeight(displayID uint32) uint32 {
 	return uint32(C.CGDisplayPixelsHigh(C.uint32_t(displayID)))
 }

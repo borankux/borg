@@ -53,10 +53,12 @@ func (q *Queue) EnqueueJob(job *models.Job) error {
 func (q *Queue) GetNextTask(runnerID string, runnerCapabilities map[string]interface{}) (*models.Task, error) {
 	var task models.Task
 
-	// Find pending task with highest priority, ordered by creation time
+	// Find pending task from a pending or running job, ordered by creation time
+	// Only assign tasks from jobs that are pending or running (not paused, cancelled, etc.)
+	// Use a subquery to filter by job status
 	query := q.db.
-		Preload("Job").
 		Where("status = ?", "pending").
+		Where("job_id IN (SELECT id FROM jobs WHERE status IN (?))", []string{"pending", "running"}).
 		Order("created_at ASC").
 		First(&task)
 
@@ -65,6 +67,11 @@ func (q *Queue) GetNextTask(runnerID string, runnerCapabilities map[string]inter
 			return nil, nil // No pending tasks
 		}
 		return nil, fmt.Errorf("failed to get next task: %w", query.Error)
+	}
+
+	// Preload the job relation
+	if err := q.db.Preload("Job").First(&task, "id = ?", task.ID).Error; err != nil {
+		return nil, fmt.Errorf("failed to load task job: %w", err)
 	}
 
 	// Lock the task by updating its status

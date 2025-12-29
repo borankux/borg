@@ -626,7 +626,6 @@ func (c *Client) CloseScreenWebSocket() error {
 	return nil
 }
 
-<<<<<<< HEAD
 // ConnectAgentWebSocket connects to the agent WebSocket endpoint
 func (c *Client) ConnectAgentWebSocket(ctx context.Context) error {
 	c.agentWSMu.Lock()

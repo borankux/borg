@@ -6,6 +6,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Jobs from './pages/Jobs'
+import JobDetail from './pages/JobDetail'
 import Runners from './pages/Runners'
 import Logs from './pages/Logs'
 import Download from './pages/Download'
@@ -35,6 +36,16 @@ function AppRoutes() {
           <ProtectedRoute>
             <Layout>
               <Jobs />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/jobs/:id"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <JobDetail />
             </Layout>
           </ProtectedRoute>
         }

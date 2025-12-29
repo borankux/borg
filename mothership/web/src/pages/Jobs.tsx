@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import GlassCard from '../components/GlassCard'
@@ -14,6 +15,7 @@ interface Job {
 }
 
 export default function Jobs() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [jobForm, setJobForm] = useState({
@@ -180,7 +182,11 @@ export default function Jobs() {
       
       <div className="space-y-4">
         {jobsData?.jobs?.map((job) => (
-          <GlassCard key={job.id}>
+          <GlassCard 
+            key={job.id}
+            className="cursor-pointer"
+            onClick={() => navigate(`/jobs/${job.id}`)}
+          >
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="text-xl font-semibold mb-2">{job.name}</h3>
@@ -190,7 +196,7 @@ export default function Jobs() {
                   <span className={getStatusColor(job.status)}>Status: {job.status}</span>
                 </div>
               </div>
-              <div className="flex space-x-2">
+              <div className="flex space-x-2" onClick={(e) => e.stopPropagation()}>
                 {job.status === 'running' && (
                   <button
                     onClick={() => pauseMutation.mutate(job.id)}

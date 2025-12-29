@@ -12,6 +12,12 @@ interface GPUInfo {
   driver?: string
 }
 
+interface RuntimeConfig {
+  name: string
+  path?: string
+  url?: string
+}
+
 interface Runner {
   id: string
   device_id?: string
@@ -35,6 +41,7 @@ interface Runner {
   screen_monitoring_enabled?: boolean
   screen_quality?: number
   screen_fps?: number
+  runtimes?: string | RuntimeConfig[] // JSON string or parsed array
 }
 
 export default function Runners() {
@@ -163,6 +170,23 @@ export default function Runners() {
     } catch {
       return []
     }
+  }
+
+  const parseRuntimes = (runtimesStr?: string | RuntimeConfig[] | null): RuntimeConfig[] => {
+    if (!runtimesStr || runtimesStr === 'null' || runtimesStr === 'undefined') return []
+    // If it's already an array, return it
+    if (Array.isArray(runtimesStr)) return runtimesStr
+    // If it's a string, try to parse it
+    if (typeof runtimesStr === 'string') {
+      try {
+        const parsed = JSON.parse(runtimesStr)
+        if (parsed === null || parsed === undefined) return []
+        return Array.isArray(parsed) ? parsed : []
+      } catch {
+        return []
+      }
+    }
+    return []
   }
 
   // Formatting helper functions
@@ -453,6 +477,27 @@ export default function Runners() {
                   </div>
                 </div>
               </div>
+
+              {/* Runtimes Section */}
+              {(() => {
+                const runtimes = parseRuntimes(runner.runtimes)
+                return runtimes.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-gray-700">
+                    <div className="text-gray-400 text-xs mb-2">Runtimes</div>
+                    <div className="flex flex-wrap gap-2">
+                      {runtimes.map((runtime, idx) => (
+                        <div
+                          key={idx}
+                          className="px-2 py-1 bg-blue-600/20 border border-blue-500/30 rounded text-xs text-blue-300"
+                          title={runtime.path || runtime.url || runtime.name}
+                        >
+                          {runtime.name}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
 
               {/* Additional Info */}
               <div className="mt-3 pt-3 border-t border-gray-700 text-xs text-gray-500">

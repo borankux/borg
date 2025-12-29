@@ -254,6 +254,167 @@ func (h *Handler) CancelJob(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "job cancelled"})
 }
 
+// UpdateJobRequest represents job update request (all fields optional)
+type UpdateJobRequest struct {
+	Name             *string         `json:"name"`
+	Description      *string         `json:"description"`
+	Type             *string         `json:"type"`
+	Priority         *int32          `json:"priority"`
+	Command          *string         `json:"command"`
+	Args             json.RawMessage `json:"args"`
+	Env              json.RawMessage `json:"env"`
+	WorkingDirectory *string         `json:"working_directory"`
+	TimeoutSeconds   *int64          `json:"timeout_seconds"`
+	MaxRetries       *int32          `json:"max_retries"`
+}
+
+// UpdateJob updates a job (only allowed for pending or paused jobs)
+func (h *Handler) UpdateJob(c *gin.Context) {
+	jobID := c.Param("id")
+
+	var job models.Job
+	if err := h.db.First(&job, "id = ?", jobID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+
+	// Only allow updating pending or paused jobs
+	if job.Status != "pending" && job.Status != "paused" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "can only update pending or paused jobs",
+		})
+		return
+	}
+
+	var req UpdateJobRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Update fields if provided
+	if req.Name != nil {
+		if *req.Name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name cannot be empty"})
+			return
+		}
+		job.Name = *req.Name
+	}
+	if req.Description != nil {
+		job.Description = *req.Description
+	}
+	if req.Type != nil {
+		job.Type = *req.Type
+	}
+	if req.Priority != nil {
+		job.Priority = *req.Priority
+	}
+	if req.Command != nil {
+		if *req.Command == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "command cannot be empty"})
+			return
+		}
+		job.Command = *req.Command
+	}
+	if req.WorkingDirectory != nil {
+		job.WorkingDirectory = *req.WorkingDirectory
+	}
+	if req.TimeoutSeconds != nil {
+		job.TimeoutSeconds = *req.TimeoutSeconds
+	}
+	if req.MaxRetries != nil {
+		job.MaxRetries = *req.MaxRetries
+	}
+
+	// Handle Args update
+	if req.Args != nil {
+		argsStr := strings.TrimSpace(string(req.Args))
+		if len(argsStr) > 0 && argsStr != "null" {
+			var argsArray []interface{}
+			if err := json.Unmarshal(req.Args, &argsArray); err == nil {
+				if argsJSON, err := json.Marshal(argsArray); err == nil {
+					job.Args = string(argsJSON)
+				} else {
+					job.Args = "[]"
+				}
+			} else {
+				var singleArg interface{}
+				if err := json.Unmarshal(req.Args, &singleArg); err == nil {
+					if argsJSON, err := json.Marshal([]interface{}{singleArg}); err == nil {
+						job.Args = string(argsJSON)
+					} else {
+						job.Args = "[]"
+					}
+				} else {
+					job.Args = "[]"
+				}
+			}
+		} else {
+			job.Args = "[]"
+		}
+	}
+
+	// Handle Env update
+	if req.Env != nil {
+		envStr := strings.TrimSpace(string(req.Env))
+		if len(envStr) > 0 && envStr != "null" {
+			var envMap map[string]interface{}
+			if err := json.Unmarshal(req.Env, &envMap); err == nil {
+				if envJSON, err := json.Marshal(envMap); err == nil {
+					job.Env = string(envJSON)
+				} else {
+					job.Env = "{}"
+				}
+			} else {
+				job.Env = "{}"
+			}
+		} else {
+			job.Env = "{}"
+		}
+	}
+
+	job.UpdatedAt = time.Now()
+
+	if err := h.db.Save(&job).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, job)
+}
+
+// DeleteJob deletes a job
+func (h *Handler) DeleteJob(c *gin.Context) {
+	jobID := c.Param("id")
+
+	var job models.Job
+	if err := h.db.First(&job, "id = ?", jobID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+
+	// Check if job has running tasks
+	var runningTaskCount int64
+	h.db.Model(&models.Task{}).Where("job_id = ? AND status = ?", jobID, "running").Count(&runningTaskCount)
+	if runningTaskCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "cannot delete job with running tasks",
+		})
+		return
+	}
+
+	// Soft delete the job
+	if err := h.db.Delete(&job).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "job deleted successfully",
+	})
+}
+
 // ListRunners returns a list of runners with calculated offline status
 func (h *Handler) ListRunners(c *gin.Context) {
 	var runners []models.Runner
@@ -390,12 +551,12 @@ type RegisterRunnerRequest struct {
 	Labels             map[string]string `json:"labels"`
 	Token              string            `json:"token"`
 	// Resource information
-	CPUCores                int32     `json:"cpu_cores"`
-	CPUModel                string    `json:"cpu_model"`
-	CPUFrequencyMHz         int32     `json:"cpu_frequency_mhz"`
-	MemoryGB                float64   `json:"memory_gb"`
-	DiskSpaceGB             float64   `json:"disk_space_gb"`       // Free/available disk space
-	TotalDiskSpaceGB        float64   `json:"total_disk_space_gb"` // Total disk space
+	CPUCores                int32           `json:"cpu_cores"`
+	CPUModel                string          `json:"cpu_model"`
+	CPUFrequencyMHz         int32           `json:"cpu_frequency_mhz"`
+	MemoryGB                float64         `json:"memory_gb"`
+	DiskSpaceGB             float64         `json:"disk_space_gb"`       // Free/available disk space
+	TotalDiskSpaceGB        float64         `json:"total_disk_space_gb"` // Total disk space
 	OSVersion               string          `json:"os_version"`
 	GPUInfo                 []GPUInfo       `json:"gpu_info"`
 	PublicIPs               []string        `json:"public_ips"`
@@ -1182,9 +1343,9 @@ func (h *Handler) Login(c *gin.Context) {
 
 // UpdateScreenSettingsRequest represents screen settings update request
 type UpdateScreenSettingsRequest struct {
-	Quality      int32   `json:"quality" binding:"required,min=1,max=100"` // JPEG quality 1-100
-	FPS          float64 `json:"fps" binding:"required,min=0.5,max=10"`    // Frames per second
-	ScreenIndex  *int32  `json:"screen_index,omitempty"`                    // Optional screen index (0 = primary)
+	Quality     int32   `json:"quality" binding:"required,min=1,max=100"` // JPEG quality 1-100
+	FPS         float64 `json:"fps" binding:"required,min=0.5,max=10"`    // Frames per second
+	ScreenIndex *int32  `json:"screen_index,omitempty"`                   // Optional screen index (0 = primary)
 }
 
 // UpdateScreenSettings updates screen capture settings for a runner
@@ -1248,7 +1409,6 @@ func (h *Handler) GetCurrentUser(c *gin.Context) {
 	c.JSON(http.StatusOK, userResponse)
 }
 
-<<<<<<< HEAD
 // handleWebSocketHeartbeat handles heartbeat messages from agents via WebSocket
 func (h *Handler) handleWebSocketHeartbeat(runnerID string, data interface{}) {
 	// Convert data to HeartbeatRequest
@@ -1791,5 +1951,4 @@ func (h *Handler) ListJobResults(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, results)
->>>>>>> c45fd68 (Add runtime configuration support for solder agents)
 }

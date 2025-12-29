@@ -241,7 +241,11 @@ The agent will continue running without screen monitoring.
 						isStreaming = false // Reset flag so we restart below
 					}
 
-					if status.Streaming && !isStreaming {
+					// Only stream if there are active viewers (viewerCount > 0)
+					// This ensures we don't waste resources streaming when no one is watching
+					shouldStream := status.ViewerCount > 0
+					
+					if shouldStream && !isStreaming {
 						// Start streaming with current settings
 						log.Printf("Starting screen streaming (viewers: %d, quality=%d, fps=%.1f)", 
 							status.ViewerCount, status.Quality, status.FPS)
@@ -263,9 +267,9 @@ The agent will continue running without screen monitoring.
 							}
 							return nil
 						})
-					} else if !status.Streaming && isStreaming {
-						// Stop streaming
-						log.Println("Stopping screen streaming (no viewers)")
+					} else if !shouldStream && isStreaming {
+						// Stop streaming when no viewers are present
+						log.Printf("Stopping screen streaming (viewers: %d)", status.ViewerCount)
 						streamingCancel()
 						streamingCancel = nil
 						screenCapture.StopStreaming()

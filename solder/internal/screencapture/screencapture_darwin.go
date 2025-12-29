@@ -258,6 +258,48 @@ func (s *CaptureService) IsEnabled() bool {
 	return s.enabled
 }
 
+// ScreenInfo represents information about an available screen/display
+type ScreenInfo struct {
+	Index     int    `json:"index"`
+	Name      string `json:"name"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	IsPrimary bool   `json:"is_primary"`
+}
+
+// GetQuality returns the current quality setting
+func (s *CaptureService) GetQuality() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.quality
+}
+
+// GetInterval returns the current capture interval
+func (s *CaptureService) GetInterval() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.interval
+}
+
+// UpdateSettings updates quality and FPS settings dynamically
+func (s *CaptureService) UpdateSettings(quality int, fps float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	if quality > 0 && quality <= 100 {
+		s.quality = quality
+		if s.session != nil {
+			// Update session quality if possible
+			// Note: macOS capture session quality might need to be updated differently
+		}
+	}
+	
+	if fps > 0 && fps <= 10 {
+		// Convert FPS to interval duration
+		s.interval = time.Duration(float64(time.Second) / fps)
+	}
+}
+
 // GetAvailableScreens returns a list of available screens/displays (macOS)
 func (s *CaptureService) GetAvailableScreens() ([]ScreenInfo, error) {
 	if !s.enabled {
