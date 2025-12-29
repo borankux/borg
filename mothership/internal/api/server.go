@@ -111,6 +111,17 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 			// Logs
 			protected.GET("/tasks/:id/logs", handler.GetTaskLogs)
 			
+			// Executor binaries
+			protected.POST("/executor-binaries/upload", handler.UploadExecutorBinary)
+			protected.GET("/executor-binaries", handler.ListExecutorBinaries)
+			protected.GET("/executor-binaries/:id", handler.GetExecutorBinary)
+			protected.DELETE("/executor-binaries/:id", handler.DeleteExecutorBinary)
+
+			// Job processor scripts and datasets
+			protected.POST("/jobs/:id/processor-script/upload", handler.UploadProcessorScript)
+			protected.POST("/jobs/:id/dataset/upload", handler.UploadCSVDataset)
+			protected.GET("/jobs/:id/results", handler.ListJobResults)
+
 			// Current user endpoint
 			protected.GET("/auth/me", handler.GetCurrentUser)
 		}
@@ -122,7 +133,10 @@ func NewServer(db *gorm.DB, q *queue.Queue, hub *websocket.Hub, screenHub *webso
 		api.POST("/tasks/:id/status", handler.UpdateTaskStatus)
 		api.GET("/files/:id/download", handler.DownloadFile)
 		api.POST("/artifacts/upload", handler.UploadArtifact)
-		
+
+		// Job results upload (for solder agents)
+		api.POST("/jobs/:id/results/upload", handler.UploadJobResult)
+
 		// Screen streaming endpoints (unprotected - for agents)
 		api.POST("/runners/:id/screen/frame", handler.UploadScreenFrame)
 		api.GET("/runners/:id/screen/status", handler.GetScreenStreamStatus)

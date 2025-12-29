@@ -21,6 +21,9 @@ type Job struct {
 	DockerImage     string    `gorm:"type:varchar(500)" json:"docker_image"`
 	Privileged      bool      `gorm:"default:false" json:"privileged"`
 	Metadata        string    `gorm:"type:jsonb" json:"metadata"` // JSON map
+	ExecutorBinaryID string   `gorm:"type:varchar(36);index" json:"executor_binary_id"` // Reusable executor binary
+	ProcessorScriptID string   `gorm:"type:varchar(36);index" json:"processor_script_id"` // Processor script for this job
+	CSVDatasetID    string    `gorm:"type:varchar(36);index" json:"csv_dataset_id"` // CSV dataset file
 	Status          string    `gorm:"not null;type:varchar(50);default:'pending'" json:"status"`
 	CreatedBy       string    `gorm:"type:varchar(255)" json:"created_by"`
 	CreatedAt       time.Time `gorm:"not null" json:"created_at"`
@@ -29,6 +32,7 @@ type Job struct {
 	
 	Tasks           []Task    `gorm:"foreignKey:JobID" json:"tasks,omitempty"`
 	JobFiles        []JobFile `gorm:"foreignKey:JobID" json:"job_files,omitempty"`
+	JobResults      []JobResult `gorm:"foreignKey:JobID" json:"job_results,omitempty"`
 }
 
 func (Job) TableName() string {

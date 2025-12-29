@@ -15,6 +15,7 @@ type Task struct {
 	CompletedAt   *time.Time `json:"completed_at"`
 	ExitCode      *int32     `json:"exit_code"`
 	ErrorMessage  string     `gorm:"type:text" json:"error_message"`
+	TaskData      string     `gorm:"type:jsonb" json:"task_data"` // CSV row data as JSON
 	RetryCount    int32      `gorm:"default:0" json:"retry_count"`
 	CreatedAt     time.Time  `gorm:"not null" json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
@@ -23,6 +24,7 @@ type Task struct {
 	Job           Job       `gorm:"foreignKey:JobID" json:"job,omitempty"`
 	Runner        Runner    `gorm:"foreignKey:RunnerID" json:"runner,omitempty"`
 	Logs          []TaskLog `gorm:"foreignKey:TaskID" json:"logs,omitempty"`
+	JobResults    []JobResult `gorm:"foreignKey:TaskID" json:"job_results,omitempty"`
 }
 
 func (Task) TableName() string {

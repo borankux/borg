@@ -10,6 +10,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -73,16 +75,17 @@ type RegisterRunnerRequest struct {
 	Labels             map[string]string `json:"labels"`
 	Token              string            `json:"token"`
 	// Resource information
-	CPUCores                int32     `json:"cpu_cores"`
-	CPUModel                string    `json:"cpu_model"`
-	CPUFrequencyMHz         int32     `json:"cpu_frequency_mhz"`
-	MemoryGB                float64   `json:"memory_gb"`
-	DiskSpaceGB             float64   `json:"disk_space_gb"`       // Free/available disk space
-	TotalDiskSpaceGB        float64   `json:"total_disk_space_gb"` // Total disk space
-	OSVersion               string    `json:"os_version"`
-	GPUInfo                 []GPUInfo `json:"gpu_info"`
-	PublicIPs               []string  `json:"public_ips"`
-	ScreenMonitoringEnabled bool      `json:"screen_monitoring_enabled"`
+	CPUCores                int32             `json:"cpu_cores"`
+	CPUModel                string            `json:"cpu_model"`
+	CPUFrequencyMHz         int32             `json:"cpu_frequency_mhz"`
+	MemoryGB                float64           `json:"memory_gb"`
+	DiskSpaceGB             float64           `json:"disk_space_gb"`       // Free/available disk space
+	TotalDiskSpaceGB        float64           `json:"total_disk_space_gb"` // Total disk space
+	OSVersion               string            `json:"os_version"`
+	GPUInfo                 []GPUInfo         `json:"gpu_info"`
+	PublicIPs               []string          `json:"public_ips"`
+	ScreenMonitoringEnabled bool              `json:"screen_monitoring_enabled"`
+	Runtimes                []RuntimeConfig   `json:"runtimes"`
 }
 
 // GPUInfo represents GPU information
@@ -90,6 +93,13 @@ type GPUInfo struct {
 	Name     string  `json:"name"`
 	MemoryGB float64 `json:"memory_gb"`
 	Driver   string  `json:"driver,omitempty"`
+}
+
+// RuntimeConfig represents a runtime configuration
+type RuntimeConfig struct {
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
+	URL  string `json:"url,omitempty"`
 }
 
 // RegisterRunnerResponse represents runner registration response
@@ -133,18 +143,20 @@ func (c *Client) RegisterRunner(ctx context.Context, req *RegisterRunnerRequest)
 
 // Job represents a job from the API
 type Job struct {
-	TaskID           string            `json:"task_id"`
-	JobID            string            `json:"job_id"`
-	JobName          string            `json:"job_name"`
-	Type             string            `json:"type"` // shell, binary, docker
-	Command          string            `json:"command"`
-	Args             []string          `json:"args"`
-	Env              map[string]string `json:"env"`
-	WorkingDirectory string            `json:"working_directory"`
-	TimeoutSeconds   int64             `json:"timeout_seconds"`
-	DockerImage      string            `json:"docker_image"`
-	Privileged       bool              `json:"privileged"`
-	RequiredFiles    []string          `json:"required_files"`
+	TaskID           string                 `json:"task_id"`
+	JobID            string                 `json:"job_id"`
+	JobName          string                 `json:"job_name"`
+	Type             string                 `json:"type"` // shell, binary, docker, executor_binary
+	Command          string                 `json:"command"`
+	Args             []string               `json:"args"`
+	Env              map[string]string      `json:"env"`
+	WorkingDirectory string                 `json:"working_directory"`
+	TimeoutSeconds   int64                  `json:"timeout_seconds"`
+	DockerImage      string                 `json:"docker_image"`
+	Privileged       bool                   `json:"privileged"`
+	RequiredFiles    []string               `json:"required_files"`
+	ExecutorBinaryID string                `json:"executor_binary_id,omitempty"` // For executor_binary type
+	TaskData         map[string]interface{} `json:"task_data,omitempty"`          // CSV row data
 }
 
 // GetNextTask gets the next task for the runner
@@ -614,6 +626,7 @@ func (c *Client) CloseScreenWebSocket() error {
 	return nil
 }
 
+<<<<<<< HEAD
 // ConnectAgentWebSocket connects to the agent WebSocket endpoint
 func (c *Client) ConnectAgentWebSocket(ctx context.Context) error {
 	c.agentWSMu.Lock()
@@ -666,6 +679,62 @@ func (c *Client) StreamJobsWebSocket(ctx context.Context, jobChan chan<- *Job) e
 			}
 		}
 	}
+}
+
+// UploadJobResult uploads a job result with JSON data and optional files
+func (c *Client) UploadJobResult(ctx context.Context, taskID, jobID, resultDataJSON string, taskDir string) error {
+	// Create multipart form
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+
+	// Add fields
+	writer.WriteField("task_id", taskID)
+	writer.WriteField("job_id", jobID)
+	writer.WriteField("result_data", resultDataJSON)
+
+	// Add files from task directory (look for result files)
+	if taskDir != "" {
+		// Look for files in task directory that might be results
+		files, err := os.ReadDir(taskDir)
+		if err == nil {
+			for _, file := range files {
+				if !file.IsDir() && file.Name() != "task_data.json" {
+					filePath := filepath.Join(taskDir, file.Name())
+					fileReader, err := os.Open(filePath)
+					if err == nil {
+						fileWriter, err := writer.CreateFormFile("files[]", file.Name())
+						if err == nil {
+							io.Copy(fileWriter, fileReader)
+						}
+						fileReader.Close()
+					}
+				}
+			}
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/jobs/"+jobID+"/results/upload", &requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return nil
 }
 
 // SendHeartbeatWebSocket sends a heartbeat via WebSocket
@@ -728,3 +797,4 @@ func (c *Client) IsAgentWebSocketConnected() bool {
 	defer c.agentWSMu.Unlock()
 	return c.agentWSClient != nil && c.agentWSClient.IsConnected()
 }
+

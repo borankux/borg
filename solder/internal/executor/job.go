@@ -5,7 +5,7 @@ type Job struct {
 	TaskID           string
 	JobID            string
 	JobName          string
-	Type             string // shell, binary, docker
+	Type             string // shell, binary, docker, executor_binary
 	Command          string
 	Args             []string
 	Env              map[string]string
@@ -14,5 +14,7 @@ type Job struct {
 	DockerImage      string
 	Privileged       bool
 	RequiredFiles    []string
+	ExecutorBinaryID string
+	TaskData         map[string]interface{} // CSV row data
 }
 

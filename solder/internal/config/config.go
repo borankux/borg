@@ -10,12 +10,13 @@ import (
 )
 
 type Config struct {
-	Solder       SolderConfig        `mapstructure:"solder"`
-	Server       ServerConfig        `mapstructure:"server"`
-	Work         WorkConfig          `mapstructure:"work"`
-	Tasks        TasksConfig         `mapstructure:"tasks"`
-	Heartbeat    HeartbeatConfig     `mapstructure:"heartbeat"`
+	Solder        SolderConfig        `mapstructure:"solder"`
+	Server        ServerConfig        `mapstructure:"server"`
+	Work          WorkConfig          `mapstructure:"work"`
+	Tasks         TasksConfig         `mapstructure:"tasks"`
+	Heartbeat     HeartbeatConfig     `mapstructure:"heartbeat"`
 	ScreenCapture ScreenCaptureConfig `mapstructure:"screen_capture"`
+	Runtimes      []RuntimeConfig     `mapstructure:"runtimes"`
 }
 
 type SolderConfig struct {
@@ -45,6 +46,12 @@ type ScreenCaptureConfig struct {
 	Quality         int     `mapstructure:"quality"`
 	MaxWidth        int     `mapstructure:"max_width"`
 	MaxHeight       int     `mapstructure:"max_height"`
+}
+
+type RuntimeConfig struct {
+	Name string `mapstructure:"name"`
+	Path string `mapstructure:"path"`
+	URL  string `mapstructure:"url"`
 }
 
 var GlobalConfig *Config
@@ -110,4 +117,3 @@ func Load(configPath string) (*Config, error) {
 	GlobalConfig = &cfg
 	return &cfg, nil
 }
-

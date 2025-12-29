@@ -17,6 +17,15 @@ func Migrate(db *gorm.DB) error {
 		}
 	}
 	
+	// Add runtimes column if it doesn't exist
+	if !db.Migrator().HasColumn(&Runner{}, "runtimes") {
+		if err := db.Migrator().AddColumn(&Runner{}, "runtimes"); err != nil {
+			// Column might already exist, continue
+		}
+		// Set default value for existing runners (empty JSON array)
+		db.Exec("UPDATE runners SET runtimes = '[]' WHERE runtimes IS NULL OR runtimes = ''")
+	}
+
 	// Backfill device_id for existing runners
 	var runners []Runner
 	db.Where("device_id IS NULL OR device_id = ''").Find(&runners)
@@ -37,6 +46,9 @@ func Migrate(db *gorm.DB) error {
 		&TaskLog{},
 		&File{},
 		&Artifact{},
+		&ExecutorBinary{},
+		&ProcessorScript{},
+		&JobResult{},
 	); err != nil {
 		return err
 	}

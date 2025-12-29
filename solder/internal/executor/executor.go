@@ -2,18 +2,30 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 )
 
+// RuntimeConfig represents a runtime configuration
+type RuntimeConfig struct {
+	Name string
+	Path string
+	URL  string
+}
+
 // Executor executes tasks
 type Executor struct {
-	workDir string
+	workDir   string
+	runtimes  map[string]RuntimeConfig // runtime name -> config
+	runtimeMu sync.RWMutex
 }
 
 // NewExecutor creates a new executor
@@ -23,8 +35,25 @@ func NewExecutor(workDir string) (*Executor, error) {
 	}
 	
 	return &Executor{
-		workDir: workDir,
+		workDir:  workDir,
+		runtimes: make(map[string]RuntimeConfig),
 	}, nil
+}
+
+// SetRuntimes configures the runtimes available for execution
+func (e *Executor) SetRuntimes(runtimes []RuntimeConfig) {
+	e.runtimeMu.Lock()
+	defer e.runtimeMu.Unlock()
+
+	// Clear existing runtimes
+	e.runtimes = make(map[string]RuntimeConfig)
+
+	// Add new runtimes
+	for _, rt := range runtimes {
+		if rt.Name != "" {
+			e.runtimes[rt.Name] = rt
+		}
+	}
 }
 
 // ExecuteResult contains execution results
@@ -45,15 +74,27 @@ func (e *Executor) Execute(ctx context.Context, job *Job, taskDir string, stdout
 	var cmd *exec.Cmd
 	var err error
 	
-	switch job.Type {
-	case "shell":
-		cmd, err = e.executeShell(ctx, job, taskDir)
-	case "binary":
-		cmd, err = e.executeBinary(ctx, job, taskDir)
-	case "docker":
-		cmd, err = e.executeDocker(ctx, job, taskDir)
-	default:
-		return nil, fmt.Errorf("unsupported job type: %v", job.Type)
+	// Check if job.Type is a configured runtime
+	e.runtimeMu.RLock()
+	runtimeConfig, isRuntime := e.runtimes[job.Type]
+	e.runtimeMu.RUnlock()
+
+	if isRuntime {
+		cmd, err = e.executeRuntime(ctx, job, taskDir, runtimeConfig)
+	} else {
+		// Use existing job types
+		switch job.Type {
+		case "shell":
+			cmd, err = e.executeShell(ctx, job, taskDir)
+		case "binary":
+			cmd, err = e.executeBinary(ctx, job, taskDir)
+		case "docker":
+			cmd, err = e.executeDocker(ctx, job, taskDir)
+		case "executor_binary":
+			cmd, err = e.executeExecutorBinary(ctx, job, taskDir)
+		default:
+			return nil, fmt.Errorf("unsupported job type: %v", job.Type)
+		}
 	}
 	
 	if err != nil {
@@ -181,5 +222,166 @@ func (e *Executor) executeDocker(ctx context.Context, job *Job, taskDir string) 
 	
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	return cmd, nil
+}
+
+// executeExecutorBinary executes an executor binary with task data
+func (e *Executor) executeExecutorBinary(ctx context.Context, job *Job, taskDir string) (*exec.Cmd, error) {
+	// Find executor binary in required files (should be the last one)
+	var binaryPath string
+	for i := len(job.RequiredFiles) - 1; i >= 0; i-- {
+		// Check if this file is the executor binary
+		// The executor binary should be in taskDir as "file_N" where N is the index
+		candidatePath := filepath.Join(taskDir, fmt.Sprintf("file_%d", i))
+		if info, err := os.Stat(candidatePath); err == nil && !info.IsDir() {
+			// Check if it's executable (or make it executable)
+			if runtime.GOOS != "windows" {
+				os.Chmod(candidatePath, 0755)
+			}
+			binaryPath = candidatePath
+			break
+		}
+	}
+
+	if binaryPath == "" {
+		// Try to find by executor binary ID in filename
+		if job.ExecutorBinaryID != "" {
+			// Look for file with executor binary ID in name
+			files, err := os.ReadDir(taskDir)
+			if err == nil {
+				for _, file := range files {
+					if !file.IsDir() {
+						potentialPath := filepath.Join(taskDir, file.Name())
+						if runtime.GOOS != "windows" {
+							os.Chmod(potentialPath, 0755)
+						}
+						binaryPath = potentialPath
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if binaryPath == "" {
+		return nil, fmt.Errorf("executor binary not found in task directory")
+	}
+
+	// Write TaskData as JSON file and set environment variable
+	env := os.Environ()
+	if job.TaskData != nil && len(job.TaskData) > 0 {
+		taskDataJSON, err := json.Marshal(job.TaskData)
+		if err == nil {
+			// Write to file
+			taskDataPath := filepath.Join(taskDir, "task_data.json")
+			os.WriteFile(taskDataPath, taskDataJSON, 0644)
+
+			// Set environment variable
+			env = append(env, fmt.Sprintf("TASK_DATA_JSON=%s", string(taskDataJSON)))
+		}
+	}
+
+	// Set other environment variables
+	for k, v := range job.Env {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Execute binary
+	cmd := exec.CommandContext(ctx, binaryPath, job.Args...)
+	cmd.Env = env
+	return cmd, nil
+}
+
+// executeRuntime executes a job using a configured runtime
+func (e *Executor) executeRuntime(ctx context.Context, job *Job, taskDir string, runtimeConfig RuntimeConfig) (*exec.Cmd, error) {
+	var executablePath string
+	var err error
+
+	// Determine executable path
+	if runtimeConfig.URL != "" {
+		// Download runtime from URL if needed
+		executablePath, err = e.downloadRuntime(ctx, runtimeConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download runtime %s: %w", runtimeConfig.Name, err)
+		}
+	} else if runtimeConfig.Path != "" {
+		// Use provided path
+		executablePath = runtimeConfig.Path
+		// Verify the executable exists
+		if _, err := os.Stat(executablePath); os.IsNotExist(err) {
+			return nil, fmt.Errorf("runtime executable not found: %s", executablePath)
+		}
+	} else {
+		return nil, fmt.Errorf("runtime %s has no path or URL configured", runtimeConfig.Name)
+	}
+
+	// Build command: runtimePath command [args...]
+	// The command becomes the first argument to the runtime, and job.Args become additional arguments
+	args := make([]string, 0, 1+len(job.Args))
+	args = append(args, job.Command)
+	args = append(args, job.Args...)
+
+	cmd := exec.CommandContext(ctx, executablePath, args...)
+	return cmd, nil
+}
+
+// downloadRuntime downloads a runtime binary from URL and caches it
+func (e *Executor) downloadRuntime(ctx context.Context, runtimeConfig RuntimeConfig) (string, error) {
+	// Create runtime cache directory
+	runtimeCacheDir := filepath.Join(e.workDir, ".runtimes")
+	if err := os.MkdirAll(runtimeCacheDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create runtime cache directory: %w", err)
+	}
+
+	// Cache path: work/.runtimes/{runtime-name}
+	cachedPath := filepath.Join(runtimeCacheDir, runtimeConfig.Name)
+
+	// Check if already cached
+	if info, err := os.Stat(cachedPath); err == nil && !info.IsDir() {
+		// Runtime is cached, return cached path
+		return cachedPath, nil
+	}
+
+	// Download runtime
+	req, err := http.NewRequestWithContext(ctx, "GET", runtimeConfig.URL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Minute,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download runtime: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download runtime: HTTP %d", resp.StatusCode)
+	}
+
+	// Create cached file
+	file, err := os.Create(cachedPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create cached runtime file: %w", err)
+	}
+	defer file.Close()
+
+	// Copy downloaded data to file
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		os.Remove(cachedPath) // Clean up on error
+		return "", fmt.Errorf("failed to write cached runtime file: %w", err)
+	}
+
+	// Make executable on Unix systems
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(cachedPath, 0755); err != nil {
+			os.Remove(cachedPath) // Clean up on error
+			return "", fmt.Errorf("failed to make runtime executable: %w", err)
+		}
+	}
+
+	return cachedPath, nil
 }
 

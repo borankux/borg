@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -92,6 +93,16 @@ The agent will continue running without screen monitoring.
 	// Create client
 	httpClient := client.NewClient(cfg.Server.Address, "")
 
+	// Convert runtime configs to client format
+	runtimeConfigs := make([]client.RuntimeConfig, 0, len(cfg.Runtimes))
+	for _, rt := range cfg.Runtimes {
+		runtimeConfigs = append(runtimeConfigs, client.RuntimeConfig{
+			Name: rt.Name,
+			Path: rt.Path,
+			URL:  rt.URL,
+		})
+	}
+
 	// Register runner
 	ctx := context.Background()
 	log.Printf("Registering to mothership: %s", cfg.Server.Address)
@@ -106,6 +117,7 @@ The agent will continue running without screen monitoring.
 		Labels:                  getLabels(),
 		Token:                   cfg.Solder.Token,
 		ScreenMonitoringEnabled: screenMonitoringEnabled,
+		Runtimes:               runtimeConfigs,
 	}
 
 	// Detect and fill resource information
@@ -143,6 +155,20 @@ The agent will continue running without screen monitoring.
 	exec, err := executor.NewExecutor(cfg.Work.Directory)
 	if err != nil {
 		log.Fatalf("Failed to create executor: %v", err)
+	}
+
+	// Convert runtime configs to executor format and set them
+	executorRuntimes := make([]executor.RuntimeConfig, 0, len(cfg.Runtimes))
+	for _, rt := range cfg.Runtimes {
+		executorRuntimes = append(executorRuntimes, executor.RuntimeConfig{
+			Name: rt.Name,
+			Path: rt.Path,
+			URL:  rt.URL,
+		})
+	}
+	exec.SetRuntimes(executorRuntimes)
+	if len(executorRuntimes) > 0 {
+		log.Printf("Configured %d runtime(s)", len(executorRuntimes))
 	}
 
 	// Create downloader
@@ -375,6 +401,8 @@ The agent will continue running without screen monitoring.
 						DockerImage:      j.DockerImage,
 						Privileged:       j.Privileged,
 						RequiredFiles:    j.RequiredFiles,
+						ExecutorBinaryID: j.ExecutorBinaryID,
+						TaskData:         j.TaskData,
 					}
 
 					// Execute task
@@ -388,6 +416,31 @@ The agent will continue running without screen monitoring.
 						status = "failed"
 						if err != nil {
 							errorMsg = err.Error()
+						}
+					}
+
+					// For executor_binary type, upload results
+					if j.Type == "executor_binary" {
+						// Check for result.json file
+						resultJSONPath := filepath.Join(taskDir, "result.json")
+						if resultData, err := os.ReadFile(resultJSONPath); err == nil {
+							// Upload result
+							if err := httpClient.UploadJobResult(ctx, j.TaskID, j.JobID, string(resultData), taskDir); err != nil {
+								log.Printf("Failed to upload job result: %v", err)
+							}
+						} else {
+							// If no result.json, create one from stdout if available
+							if len(stdoutBuf) > 0 {
+								resultData := map[string]interface{}{
+									"stdout": string(stdoutBuf),
+									"stderr": string(stderrBuf),
+									"exit_code": exitCode,
+								}
+								resultJSON, _ := json.Marshal(resultData)
+								if err := httpClient.UploadJobResult(ctx, j.TaskID, j.JobID, string(resultJSON), taskDir); err != nil {
+									log.Printf("Failed to upload job result: %v", err)
+								}
+							}
 						}
 					}
 

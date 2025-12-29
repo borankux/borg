@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"borg/mothership/internal/auth"
+	"borg/mothership/internal/csvparser"
 	"borg/mothership/internal/models"
+	"borg/mothership/internal/processor"
 	"borg/mothership/internal/queue"
 	"borg/mothership/internal/storage"
 	"borg/mothership/internal/websocket"
@@ -31,6 +33,7 @@ type Handler struct {
 	storage   *storage.Storage
 	screenHub *websocket.ScreenHub
 	agentHub  *websocket.AgentHub
+	processor *processor.Processor
 }
 
 // NewHandler creates a new API handler
@@ -41,6 +44,7 @@ func NewHandler(db *gorm.DB, q *queue.Queue, s *storage.Storage, screenHub *webs
 		storage:   s,
 		screenHub: screenHub,
 		agentHub:  agentHub,
+		processor: processor.NewProcessor(db, s),
 	}
 }
 
@@ -386,16 +390,17 @@ type RegisterRunnerRequest struct {
 	Labels             map[string]string `json:"labels"`
 	Token              string            `json:"token"`
 	// Resource information
-	CPUCores         int32     `json:"cpu_cores"`
-	CPUModel         string    `json:"cpu_model"`
-	CPUFrequencyMHz  int32     `json:"cpu_frequency_mhz"`
-	MemoryGB         float64   `json:"memory_gb"`
-	DiskSpaceGB      float64   `json:"disk_space_gb"`       // Free/available disk space
-	TotalDiskSpaceGB float64   `json:"total_disk_space_gb"` // Total disk space
-	OSVersion              string            `json:"os_version"`
-	GPUInfo                []GPUInfo         `json:"gpu_info"`
-	PublicIPs              []string          `json:"public_ips"`
-	ScreenMonitoringEnabled bool             `json:"screen_monitoring_enabled"`
+	CPUCores                int32     `json:"cpu_cores"`
+	CPUModel                string    `json:"cpu_model"`
+	CPUFrequencyMHz         int32     `json:"cpu_frequency_mhz"`
+	MemoryGB                float64   `json:"memory_gb"`
+	DiskSpaceGB             float64   `json:"disk_space_gb"`       // Free/available disk space
+	TotalDiskSpaceGB        float64   `json:"total_disk_space_gb"` // Total disk space
+	OSVersion               string          `json:"os_version"`
+	GPUInfo                 []GPUInfo       `json:"gpu_info"`
+	PublicIPs               []string        `json:"public_ips"`
+	ScreenMonitoringEnabled bool            `json:"screen_monitoring_enabled"`
+	Runtimes                []RuntimeConfig `json:"runtimes"`
 }
 
 // GPUInfo represents GPU information
@@ -403,6 +408,13 @@ type GPUInfo struct {
 	Name     string  `json:"name"`
 	MemoryGB float64 `json:"memory_gb"`
 	Driver   string  `json:"driver,omitempty"`
+}
+
+// RuntimeConfig represents a runtime configuration
+type RuntimeConfig struct {
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
+	URL  string `json:"url,omitempty"`
 }
 
 // RegisterRunnerResponse represents runner registration response
@@ -432,12 +444,13 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 	labelsJSON, _ := json.Marshal(req.Labels)
 	gpuInfoJSON, _ := json.Marshal(req.GPUInfo)
 	publicIPsJSON, _ := json.Marshal(req.PublicIPs)
+	runtimesJSON, _ := json.Marshal(req.Runtimes)
 
 	// Check if a runner with the same device_id already exists (including soft-deleted)
 	// If device_id is not provided, fall back to hostname for backward compatibility
 	var existingRunner models.Runner
 	var err error
-	
+
 	if req.DeviceID != "" {
 		err = h.db.Unscoped().Where("device_id = ?", req.DeviceID).First(&existingRunner).Error
 	} else {
@@ -464,14 +477,15 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 		existingRunner.GPUInfo = string(gpuInfoJSON)
 		existingRunner.PublicIPs = string(publicIPsJSON)
 		existingRunner.ScreenMonitoringEnabled = req.ScreenMonitoringEnabled
+		existingRunner.Runtimes = string(runtimesJSON)
 		existingRunner.LastHeartbeat = now
 		existingRunner.UpdatedAt = now
-		
+
 		// Update device_id if provided and not already set
 		if req.DeviceID != "" && existingRunner.DeviceID == "" {
 			existingRunner.DeviceID = req.DeviceID
 		}
-		
+
 		// If runner was soft-deleted, restore it by clearing DeletedAt
 		if existingRunner.DeletedAt.Valid {
 			existingRunner.DeletedAt = gorm.DeletedAt{}
@@ -502,7 +516,7 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 	}
 
 	// Check if error is "not found" (expected) or a real database error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		c.JSON(http.StatusInternalServerError, RegisterRunnerResponse{
 			Success: false,
 			Message: err.Error(),
@@ -512,7 +526,7 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 
 	// Runner doesn't exist - create a new one
 	runnerID := uuid.New().String()
-	
+
 	// Use provided device_id or generate a new one
 	deviceID := req.DeviceID
 	if deviceID == "" {
@@ -520,29 +534,30 @@ func (h *Handler) RegisterRunner(c *gin.Context) {
 	}
 
 	runner := &models.Runner{
-		ID:                 runnerID,
-		DeviceID:           deviceID,
-		Name:               req.Name,
-		Hostname:           req.Hostname,
-		OS:                 req.OS,
-		Architecture:       req.Architecture,
-		MaxConcurrentTasks: req.MaxConcurrentTasks,
-		Status:             "idle",
-		Labels:             string(labelsJSON),
-		CPUCores:           req.CPUCores,
-		CPUModel:           req.CPUModel,
-		CPUFrequencyMHz:    req.CPUFrequencyMHz,
-		MemoryGB:           req.MemoryGB,
-		DiskSpaceGB:        req.DiskSpaceGB,
-		TotalDiskSpaceGB:   req.TotalDiskSpaceGB,
-		OSVersion:          req.OSVersion,
-		GPUInfo:                string(gpuInfoJSON),
-		PublicIPs:              string(publicIPsJSON),
+		ID:                      runnerID,
+		DeviceID:                deviceID,
+		Name:                    req.Name,
+		Hostname:                req.Hostname,
+		OS:                      req.OS,
+		Architecture:            req.Architecture,
+		MaxConcurrentTasks:      req.MaxConcurrentTasks,
+		Status:                  "idle",
+		Labels:                  string(labelsJSON),
+		CPUCores:                req.CPUCores,
+		CPUModel:                req.CPUModel,
+		CPUFrequencyMHz:         req.CPUFrequencyMHz,
+		MemoryGB:                req.MemoryGB,
+		DiskSpaceGB:             req.DiskSpaceGB,
+		TotalDiskSpaceGB:        req.TotalDiskSpaceGB,
+		OSVersion:               req.OSVersion,
+		GPUInfo:                 string(gpuInfoJSON),
+		PublicIPs:               string(publicIPsJSON),
 		ScreenMonitoringEnabled: req.ScreenMonitoringEnabled,
-		RegisteredAt:           now,
-		LastHeartbeat:          now,
-		CreatedAt:              now,
-		UpdatedAt:              now,
+		Runtimes:                string(runtimesJSON),
+		RegisteredAt:            now,
+		LastHeartbeat:           now,
+		CreatedAt:               now,
+		UpdatedAt:               now,
 	}
 
 	if err := h.db.Create(runner).Error; err != nil {
@@ -631,18 +646,20 @@ func (h *Handler) Heartbeat(c *gin.Context) {
 
 // GetNextTaskResponse represents the next task for a runner
 type GetNextTaskResponse struct {
-	TaskID           string            `json:"task_id"`
-	JobID            string            `json:"job_id"`
-	JobName          string            `json:"job_name"`
-	Type             string            `json:"type"` // shell, binary, docker
-	Command          string            `json:"command"`
-	Args             []string          `json:"args"`
-	Env              map[string]string `json:"env"`
-	WorkingDirectory string            `json:"working_directory"`
-	TimeoutSeconds   int64             `json:"timeout_seconds"`
-	DockerImage      string            `json:"docker_image"`
-	Privileged       bool              `json:"privileged"`
-	RequiredFiles    []string          `json:"required_files"`
+	TaskID           string                 `json:"task_id"`
+	JobID            string                 `json:"job_id"`
+	JobName          string                 `json:"job_name"`
+	Type             string                 `json:"type"` // shell, binary, docker, executor_binary
+	Command          string                 `json:"command"`
+	Args             []string               `json:"args"`
+	Env              map[string]string      `json:"env"`
+	WorkingDirectory string                 `json:"working_directory"`
+	TimeoutSeconds   int64                  `json:"timeout_seconds"`
+	DockerImage      string                 `json:"docker_image"`
+	Privileged       bool                   `json:"privileged"`
+	RequiredFiles    []string               `json:"required_files"`
+	ExecutorBinaryID string                 `json:"executor_binary_id,omitempty"` // For executor_binary type
+	TaskData         map[string]interface{} `json:"task_data,omitempty"`          // CSV row data
 }
 
 // GetNextTask returns the next pending task for a runner
@@ -685,7 +702,21 @@ func (h *Handler) GetNextTask(c *gin.Context) {
 		requiredFiles = append(requiredFiles, jf.FileID)
 	}
 
-	c.JSON(http.StatusOK, GetNextTaskResponse{
+	// If executor_binary type, add executor binary to required files
+	if job.Type == "executor_binary" && job.ExecutorBinaryID != "" {
+		var executorBinary models.ExecutorBinary
+		if err := h.db.Preload("File").First(&executorBinary, "id = ?", job.ExecutorBinaryID).Error; err == nil {
+			requiredFiles = append(requiredFiles, executorBinary.FileID)
+		}
+	}
+
+	// Parse TaskData if present
+	var taskData map[string]interface{}
+	if task.TaskData != "" {
+		json.Unmarshal([]byte(task.TaskData), &taskData)
+	}
+
+	response := GetNextTaskResponse{
 		TaskID:           task.ID,
 		JobID:            job.ID,
 		JobName:          job.Name,
@@ -698,7 +729,14 @@ func (h *Handler) GetNextTask(c *gin.Context) {
 		DockerImage:      job.DockerImage,
 		Privileged:       job.Privileged,
 		RequiredFiles:    requiredFiles,
-	})
+		TaskData:         taskData,
+	}
+
+	if job.Type == "executor_binary" {
+		response.ExecutorBinaryID = job.ExecutorBinaryID
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // UpdateTaskStatusRequest represents task status update request
@@ -928,7 +966,7 @@ type UploadScreenFrameRequest struct {
 // UploadScreenFrame handles screen frame upload from agent
 func (h *Handler) UploadScreenFrame(c *gin.Context) {
 	runnerID := c.Param("id")
-	
+
 	if runnerID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "runner ID is required"})
 		return
@@ -937,7 +975,7 @@ func (h *Handler) UploadScreenFrame(c *gin.Context) {
 	var runner models.Runner
 	if err := h.db.First(&runner, "id = ?", runnerID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
-			"error": "runner not found",
+			"error":     "runner not found",
 			"runner_id": runnerID,
 		})
 		return
@@ -1079,17 +1117,17 @@ type LoginRequest struct {
 
 // LoginResponse represents login response
 type LoginResponse struct {
-	Token    string      `json:"token"`
-	User     *models.User `json:"user"`
-	Success  bool        `json:"success"`
-	Message  string      `json:"message"`
+	Token   string       `json:"token"`
+	User    *models.User `json:"user"`
+	Success bool         `json:"success"`
+	Message string       `json:"message"`
 }
 
 // Login handles user authentication
 func (h *Handler) Login(c *gin.Context) {
 	// Debug logging
 	fmt.Printf("Login endpoint called: %s %s\n", c.Request.Method, c.Request.URL.Path)
-	
+
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1136,7 +1174,7 @@ func (h *Handler) Login(c *gin.Context) {
 
 	c.JSON(http.StatusOK, LoginResponse{
 		Token:   token,
-		User:   userResponse,
+		User:    userResponse,
 		Success: true,
 		Message: "login successful",
 	})
@@ -1210,6 +1248,7 @@ func (h *Handler) GetCurrentUser(c *gin.Context) {
 	c.JSON(http.StatusOK, userResponse)
 }
 
+<<<<<<< HEAD
 // handleWebSocketHeartbeat handles heartbeat messages from agents via WebSocket
 func (h *Handler) handleWebSocketHeartbeat(runnerID string, data interface{}) {
 	// Convert data to HeartbeatRequest
@@ -1390,4 +1429,367 @@ func (h *Handler) NotifyAgentOfTask(runnerID string) {
 
 	// Send task via WebSocket
 	h.agentHub.SendTask(runnerID, taskResponse)
+}
+
+// UploadExecutorBinary handles executor binary upload
+func (h *Handler) UploadExecutorBinary(c *gin.Context) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	name := c.PostForm("name")
+	if name == "" {
+		name = file.Filename
+	}
+
+	description := c.PostForm("description")
+
+	// Open uploaded file
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer src.Close()
+
+	// Save file
+	fileID, hash, size, err := h.storage.SaveFile(src, file.Filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create file record
+	fileRecord := &models.File{
+		ID:          fileID,
+		Name:        file.Filename,
+		Path:        fileID,
+		Size:        size,
+		ContentType: file.Header.Get("Content-Type"),
+		Hash:        hash,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := h.db.Create(fileRecord).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create executor binary record
+	executorBinary := &models.ExecutorBinary{
+		ID:          uuid.New().String(),
+		Name:        name,
+		Description: description,
+		FileID:      fileID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := h.db.Create(executorBinary).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, executorBinary)
+}
+
+// ListExecutorBinaries returns a list of executor binaries
+func (h *Handler) ListExecutorBinaries(c *gin.Context) {
+	var binaries []models.ExecutorBinary
+	if err := h.db.Preload("File").Find(&binaries).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, binaries)
+}
+
+// GetExecutorBinary returns a single executor binary
+func (h *Handler) GetExecutorBinary(c *gin.Context) {
+	id := c.Param("id")
+
+	var binary models.ExecutorBinary
+	if err := h.db.Preload("File").First(&binary, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "executor binary not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, binary)
+}
+
+// DeleteExecutorBinary deletes an executor binary
+func (h *Handler) DeleteExecutorBinary(c *gin.Context) {
+	id := c.Param("id")
+
+	var binary models.ExecutorBinary
+	if err := h.db.First(&binary, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "executor binary not found"})
+		return
+	}
+
+	// Check if binary is in use
+	var count int64
+	h.db.Model(&models.Job{}).Where("executor_binary_id = ?", id).Count(&count)
+	if count > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot delete executor binary that is in use"})
+		return
+	}
+
+	if err := h.db.Delete(&binary).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "executor binary deleted"})
+}
+
+// UploadProcessorScript handles processor script upload for a job
+func (h *Handler) UploadProcessorScript(c *gin.Context) {
+	jobID := c.Param("id")
+
+	// Verify job exists
+	var job models.Job
+	if err := h.db.First(&job, "id = ?", jobID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Open uploaded file
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer src.Close()
+
+	// Save file
+	fileID, hash, size, err := h.storage.SaveFile(src, file.Filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create file record
+	fileRecord := &models.File{
+		ID:          fileID,
+		Name:        file.Filename,
+		Path:        fileID,
+		Size:        size,
+		ContentType: file.Header.Get("Content-Type"),
+		Hash:        hash,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := h.db.Create(fileRecord).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Delete existing processor script if any
+	h.db.Where("job_id = ?", jobID).Delete(&models.ProcessorScript{})
+
+	// Create processor script record
+	processorScript := &models.ProcessorScript{
+		ID:        uuid.New().String(),
+		JobID:     jobID,
+		FileID:    fileID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := h.db.Create(processorScript).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Update job with processor script ID
+	job.ProcessorScriptID = processorScript.ID
+	h.db.Save(&job)
+
+	c.JSON(http.StatusCreated, processorScript)
+}
+
+// UploadCSVDataset handles CSV dataset upload and creates tasks
+func (h *Handler) UploadCSVDataset(c *gin.Context) {
+	jobID := c.Param("id")
+
+	// Verify job exists
+	var job models.Job
+	if err := h.db.First(&job, "id = ?", jobID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Open uploaded file
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer src.Close()
+
+	// Parse CSV
+	csvRows, err := csvparser.ParseCSV(src)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Save CSV file
+	src.Seek(0, 0) // Reset reader
+	fileID, hash, size, err := h.storage.SaveFile(src, file.Filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create file record
+	fileRecord := &models.File{
+		ID:          fileID,
+		Name:        file.Filename,
+		Path:        fileID,
+		Size:        size,
+		ContentType: file.Header.Get("Content-Type"),
+		Hash:        hash,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := h.db.Create(fileRecord).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Store CSV headers in job metadata
+	headers := csvparser.GetCSVHeaders(csvRows)
+	metadata := make(map[string]interface{})
+	if job.Metadata != "" {
+		json.Unmarshal([]byte(job.Metadata), &metadata)
+	}
+	metadata["csv_headers"] = headers
+	metadataJSON, _ := json.Marshal(metadata)
+	job.Metadata = string(metadataJSON)
+	job.CSVDatasetID = fileID
+	h.db.Save(&job)
+
+	// Create tasks from CSV
+	tasks, err := csvparser.CreateTasksFromCSV(h.db, jobID, csvRows)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message":     "CSV dataset uploaded and tasks created",
+		"tasks_count": len(tasks),
+		"csv_file_id": fileID,
+	})
+}
+
+// UploadJobResult handles result upload from solder agent
+func (h *Handler) UploadJobResult(c *gin.Context) {
+	taskID := c.PostForm("task_id")
+	jobID := c.PostForm("job_id")
+	resultDataStr := c.PostForm("result_data")
+
+	if taskID == "" || jobID == "" || resultDataStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id, job_id, and result_data are required"})
+		return
+	}
+
+	// Validate JSON
+	var resultData interface{}
+	if err := json.Unmarshal([]byte(resultDataStr), &resultData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON in result_data"})
+		return
+	}
+
+	// Create result record
+	resultID := uuid.New().String()
+	result := &models.JobResult{
+		ID:         resultID,
+		TaskID:     taskID,
+		JobID:      jobID,
+		ResultData: resultDataStr,
+		Status:     "pending",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+
+	if err := h.db.Create(result).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Handle file uploads (if any)
+	form, err := c.MultipartForm()
+	if err == nil && form.File != nil {
+		for key, files := range form.File {
+			if strings.HasPrefix(key, "files") {
+				for _, fileHeader := range files {
+					file, err := fileHeader.Open()
+					if err != nil {
+						continue
+					}
+
+					// Save as artifact
+					artifactID, hash, size, err := h.storage.SaveArtifact(file, fileHeader.Filename)
+					file.Close()
+
+					if err == nil {
+						artifact := &models.Artifact{
+							ID:          artifactID,
+							TaskID:      taskID,
+							Name:        fileHeader.Filename,
+							Path:        artifactID,
+							Size:        size,
+							ContentType: fileHeader.Header.Get("Content-Type"),
+							Hash:        hash,
+							CreatedAt:   time.Now(),
+						}
+						h.db.Create(artifact)
+					}
+				}
+			}
+		}
+	}
+
+	// Trigger processor asynchronously
+	h.processor.ProcessResultAsync(resultID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"result_id": resultID,
+		"success":   true,
+		"message":   "result uploaded successfully",
+	})
+}
+
+// ListJobResults returns results for a job
+func (h *Handler) ListJobResults(c *gin.Context) {
+	jobID := c.Param("id")
+
+	var results []models.JobResult
+	if err := h.db.Where("job_id = ?", jobID).Preload("Task").Order("created_at DESC").Find(&results).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, results)
+>>>>>>> c45fd68 (Add runtime configuration support for solder agents)
 }

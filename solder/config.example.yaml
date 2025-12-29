@@ -54,6 +54,23 @@ screen_capture:
   # For higher quality: quality: 80, max_width: 1920, max_height: 1080
   # For lower bandwidth: quality: 40, max_width: 800, max_height: 600
 
+# Runtime Configuration
+runtimes:
+  # Configure supported runtimes for job execution
+  # Jobs can specify type: "python", "nodejs", etc. and the executor will use the configured runtime
+  - name: "python3"
+    path: "/usr/bin/python3"
+  - name: "python"
+    path: "/usr/bin/python"
+  # - name: "nodejs"
+  #   path: "/usr/local/bin/node"
+  # - name: "go"
+  #   path: "/usr/local/go/bin/go"
+  # - name: "shell"
+  #   path: "/bin/sh"
+  # - name: "custom-runtime"
+  #   url: "https://example.com/runtimes/custom.bin"  # URL to download binary/runtime
+
 # Environment Variable Overrides (optional)
 # These environment variables take priority over config file values:
 # SOLDER_NAME - Override solder name
